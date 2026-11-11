@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -40,7 +41,10 @@ func commandProof(ctx context.Context, args []string) error {
 	var keys proofKeyFlags
 	flags.Var(&keys, "key", "trusted public key keyID=path (repeatable)")
 	if err := flags.Parse(args[1:]); err != nil {
-		return err
+		if errors.Is(err, flag.ErrHelp) {
+			return err
+		}
+		return &exitCodeError{code: 3, err: err}
 	}
 	verifyOptions := proofverify.Options{
 		ReportPath: *reportPath, CASRoot: *casRoot, S3Endpoint: *s3Endpoint, S3Region: *s3Region,
@@ -50,7 +54,7 @@ func commandProof(ctx context.Context, args []string) error {
 	}
 	result, report, err := proofverify.Verify(ctx, verifyOptions)
 	if err != nil {
-		return err
+		return &exitCodeError{code: 3, err: err}
 	}
 	if *jsonOutput {
 		encoded, _ := json.MarshalIndent(result, "", "  ")
@@ -64,8 +68,12 @@ func commandProof(ctx context.Context, args []string) error {
 			fmt.Printf("issue: %s\n", issue)
 		}
 	}
-	if result.Status != evidence.StatusValidIntegrity {
-		return fmt.Errorf("report integrity check returned %s", result.Status)
+	switch result.Status {
+	case evidence.StatusValidIntegrity:
+		return nil
+	case evidence.StatusInvalid:
+		return &exitCodeError{code: 1, err: fmt.Errorf("report integrity check returned %s", result.Status)}
+	default:
+		return &exitCodeError{code: 2, err: fmt.Errorf("report integrity check returned %s", result.Status)}
 	}
-	return nil
 }

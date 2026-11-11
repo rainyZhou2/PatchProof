@@ -21,9 +21,23 @@ func main() {
 			os.Exit(0)
 		}
 		fmt.Fprintln(os.Stderr, "error:", err)
+		var coded *exitCodeError
+		if errors.As(err, &coded) {
+			os.Exit(coded.code)
+		}
 		os.Exit(1)
 	}
 }
+
+// exitCodeError lets a subcommand request the documented process exit code
+// while main remains the only place that calls os.Exit.
+type exitCodeError struct {
+	code int
+	err  error
+}
+
+func (e *exitCodeError) Error() string { return e.err.Error() }
+func (e *exitCodeError) Unwrap() error { return e.err }
 
 func dispatch(ctx context.Context, args []string) error {
 	if len(args) == 0 {
