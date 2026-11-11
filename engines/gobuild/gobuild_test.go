@@ -264,6 +264,33 @@ func TestRegressionBaseFailureIsNotAttributedToPatch(t *testing.T) {
 	}
 }
 
+func TestRegressionChangedTestContentIsUnknown(t *testing.T) {
+	baseRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"unexpected\")\n\t}\n}\n",
+	})
+	headRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tAdd(1, 2)\n}\n",
+	})
+	request, _ := testRequest(t, domain.StepKindRegression, map[string]engine.StagedInput{
+		"base": stagedBase(baseRoot), "head": stagedDir(headRoot),
+	}, nil, time.Time{})
+	result, err := New().Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Outcome != domain.OutcomeSucceeded {
+		t.Fatalf("outcome = %s message = %s", result.Outcome, result.Message)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Result != domain.ClaimUnknown {
+		t.Fatalf("evidence = %+v, want UNKNOWN", result.Evidence)
+	}
+	if got := result.Evidence[0].Scope.Details["changed_test_files"]; got != "1" {
+		t.Fatalf("changed_test_files = %q, want 1", got)
+	}
+}
+
 func TestRegressionRemovedTestIsUnknown(t *testing.T) {
 	baseRoot := moduleWith(t, map[string]string{
 		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",

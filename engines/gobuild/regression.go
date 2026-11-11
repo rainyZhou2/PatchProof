@@ -2,7 +2,13 @@ package gobuild
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/patchproof/patchproof/internal/domain"
@@ -192,6 +198,14 @@ func executeRegression(
 		limits = append(limits, "base regression baseline is not a clean pass: "+baselineStatus)
 	}
 	if baselineStatus == "passed" && !failed {
+		if changed, changeErr := changedTestFiles(baseRoot, root); changeErr != nil {
+			limits = append(limits, "could not compare test file content: "+changeErr.Error())
+		} else if len(changed) > 0 {
+			claimResult = domain.ClaimUnknown
+			message = fmt.Sprintf("%d base test file(s) changed content", len(changed))
+			details["changed_test_files"] = fmt.Sprintf("%d", len(changed))
+			limits = append(limits, "test file content changed relative to base; a clean exit cannot prove assertions were not weakened")
+		}
 		removed := missingTests(baseBundle, bundle)
 		if len(removed) > 0 {
 			// A patch that removes tests can still produce a clean `go test`
@@ -223,6 +237,68 @@ func executeRegression(
 		Artifacts:  artifacts,
 		Outputs:    outputs,
 	}
+}
+
+// changedTestFiles hashes every base _test.go file and compares it with the
+// same path in the head snapshot. Adding tests is allowed; modifying an
+// existing test file is treated as inconclusive because the engine cannot
+// prove that its assertions were not weakened.
+func changedTestFiles(baseRoot, headRoot string) ([]string, error) {
+	if baseRoot == "" || headRoot == "" {
+		return nil, nil
+	}
+	changed := make([]string, 0)
+	err := filepath.WalkDir(baseRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "vendor", "node_modules":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(baseRoot, path)
+		if err != nil {
+			return err
+		}
+		baseDigest, err := fileDigest(path)
+		if err != nil {
+			return err
+		}
+		headPath := filepath.Join(headRoot, relative)
+		headDigest, err := fileDigest(headPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				changed = append(changed, relative)
+				return nil
+			}
+			return err
+		}
+		if baseDigest != headDigest {
+			changed = append(changed, relative)
+		}
+		return nil
+	})
+	sort.Strings(changed)
+	return changed, err
+}
+
+func fileDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // missingTests returns base test identities that are absent from the head
