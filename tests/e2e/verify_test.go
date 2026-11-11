@@ -163,11 +163,15 @@ func TestLocalVerificationProducesVerifiableReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	cached := 0
+	engineVersions, err := bootstrap.EngineVersions(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, step := range dag.Steps {
 		if !actioncache.Cacheable(step) {
 			continue
 		}
-		key, err := actioncache.KeyForStep(step, final, cfg.Service.Version, cfg.Execution.WorkerImage)
+		key, err := actioncache.KeyForStep(step, final, cfg.Service.Version, engineVersions[step.Requirements.Engine], cfg.Execution.WorkerImage)
 		if err != nil {
 			t.Fatal(err)
 		}

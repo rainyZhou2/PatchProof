@@ -110,7 +110,8 @@ func newCacheFixture(t *testing.T) *cacheFixture {
 		Region: "local", OwnerID: "cache-test", ShardCount: 1, BatchSize: 4, LeaseTTL: 30 * time.Second,
 		ShardLeaseTTL: 10 * time.Second, PollInterval: 50 * time.Millisecond, MaxStepsPerTenant: 4,
 		MaxStepsPerCluster: 4, MaxRunWallSeconds: 600, AttemptTokenTTL: 5 * time.Minute,
-		ActionCacheEnabled: true, ActionCacheTTL: time.Hour, CacheEpoch: fixture.cacheEpoch, WorkerImage: "worker@sha256:test",
+		ActionCacheEnabled: true, ActionCacheTTL: time.Hour, CacheEpoch: fixture.cacheEpoch,
+		EngineVersions: map[string]string{"go-build": "test-version"}, WorkerImage: "worker@sha256:test",
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, nil)
 	if err != nil {
@@ -122,7 +123,7 @@ func newCacheFixture(t *testing.T) *cacheFixture {
 
 func (f *cacheFixture) key(t *testing.T) string {
 	t.Helper()
-	key, err := actioncache.KeyForStep(f.step, f.run, f.cacheEpoch, "worker@sha256:test")
+	key, err := actioncache.KeyForStep(f.step, f.run, f.cacheEpoch, "test-version", "worker@sha256:test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func TestSchedulerServesActionCacheHitWithoutExecutor(t *testing.T) {
 	fixture := newCacheFixture(t)
 	now := time.Now().UTC()
 	entry, err := actioncache.NewEntry(
-		fixture.tenantID, fixture.key(t), fixture.step, "go-build@1",
+		fixture.tenantID, fixture.key(t), fixture.step, "test-version",
 		domain.StepResult{Outcome: domain.OutcomeSucceeded, ResultDigest: "sha256:" + strings.Repeat("9", 64)},
 		time.Hour, now,
 	)
@@ -198,4 +199,39 @@ func TestSchedulerStoresActionResultAfterExecution(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("result was not written to the action cache")
+}
+
+func TestSchedulerSkipsStaleClusters(t *testing.T) {
+	fixture := newCacheFixture(t)
+	clusters, err := fixture.store.ListClusters(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clusters) != 1 {
+		t.Fatalf("clusters = %d, want 1", len(clusters))
+	}
+	stale := clusters[0]
+	stale.LastHeartbeat = time.Now().UTC().Add(-10 * time.Minute)
+	if err := fixture.store.UpsertCluster(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	go func() { _ = fixture.scheduler.Run(ctx) }()
+	<-ctx.Done()
+
+	fixture.executor.mu.Lock()
+	starts := fixture.executor.starts
+	fixture.executor.mu.Unlock()
+	if starts != 0 {
+		t.Fatalf("executor started %d times for a stale cluster", starts)
+	}
+	step, err := fixture.store.GetStep(context.Background(), fixture.tenantID, fixture.stepID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.Status != domain.StepReady {
+		t.Fatalf("step status = %s, want READY", step.Status)
+	}
 }

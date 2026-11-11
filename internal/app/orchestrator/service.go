@@ -27,6 +27,7 @@ type Config struct {
 	ValidationWorkers    int
 	MaxRepositoriesBytes int64
 	MaxChangedFiles      int
+	MaxRunWallSeconds    int
 	RequireAttestation   bool
 	SupportsBrokeredIO   bool
 	ShardCount           int
@@ -59,6 +60,9 @@ func New(store ports.MetadataStore, plannerInstance *planner.Planner, policyEngi
 	}
 	if config.ValidationWorkers <= 0 {
 		config.ValidationWorkers = 4
+	}
+	if config.MaxRunWallSeconds <= 0 {
+		config.MaxRunWallSeconds = 3600
 	}
 	if config.Clock == nil {
 		config.Clock = systemClock{}
@@ -149,6 +153,9 @@ func (s *Service) dispatch(ctx context.Context, run domain.Run) {
 func (s *Service) process(ctx context.Context, run domain.Run) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+	if expired, err := s.expireIfOverdue(ctx, run); expired || err != nil {
+		return err
+	}
 	switch run.Status {
 	case domain.RunCreated:
 		return s.transition(ctx, run, domain.RunValidating, domain.VerdictNone, domain.EventRunValidated, map[string]any{"run_id": run.ID.String()})
@@ -161,6 +168,9 @@ func (s *Service) process(ctx context.Context, run domain.Run) error {
 	case domain.RunAggregating:
 		return s.aggregate(ctx, run)
 	case domain.RunCancelling:
+		if run.FailureClass == domain.ErrTimeout {
+			return s.finishExpiredRun(ctx, run)
+		}
 		return s.finishCancellation(ctx, run)
 	default:
 		return nil
@@ -423,6 +433,76 @@ func (s *Service) aggregate(ctx context.Context, run domain.Run) error {
 	return err
 }
 
+func (s *Service) expireIfOverdue(ctx context.Context, run domain.Run) (bool, error) {
+	if run.Status.Terminal() {
+		return false, nil
+	}
+	if run.Status == domain.RunCancelling {
+		if run.FailureClass != domain.ErrTimeout {
+			return false, nil
+		}
+		return true, s.finishExpiredRun(ctx, run)
+	}
+	deadline, ok := s.runDeadline(run)
+	if !ok || s.clock.Now().Before(deadline) {
+		return false, nil
+	}
+	if run.Status == domain.RunAggregating {
+		return true, s.finishExpiredRun(ctx, run)
+	}
+	reason := fmt.Sprintf("run exceeded its wall-clock budget; deadline was %s", deadline.UTC().Format(time.RFC3339))
+	cancelling, err := s.transitionRunWithFailure(ctx, run, domain.RunCancelling, domain.VerdictNone,
+		domain.ErrTimeout, reason, domain.EventRunCancelling, map[string]any{
+			"run_id": run.ID.String(), "reason": reason, "deadline": deadline.UTC().Format(time.RFC3339),
+		})
+	if err != nil {
+		return false, err
+	}
+	return true, s.finishExpiredRun(ctx, cancelling)
+}
+
+func (s *Service) finishExpiredRun(ctx context.Context, run domain.Run) error {
+	if _, err := s.store.CancelRunSteps(ctx, run.TenantID, run.ID, s.clock.Now()); err != nil {
+		return err
+	}
+	reason := run.FailureMessage
+	if reason == "" {
+		reason = "verification did not complete within its wall-clock budget"
+	}
+	if _, err := s.proof.BuildRejectionReport(ctx, run, domain.VerdictInfraFailed, "RUN_TIMEOUT",
+		"verification did not complete within its wall-clock budget", reason); err != nil {
+		return fmt.Errorf("build timeout report: %w", err)
+	}
+	if s.metrics != nil {
+		s.metrics.RunExpired.WithLabelValues(s.config.Region).Inc()
+	}
+	_, err := s.transitionRunWithFailure(ctx, run, domain.RunInfraFailed, domain.VerdictInfraFailed,
+		domain.ErrTimeout, reason, domain.EventRunCompleted, map[string]any{
+			"run_id": run.ID.String(), "verdict": string(domain.VerdictInfraFailed), "reason": reason,
+		})
+	return err
+}
+
+func (s *Service) runDeadline(run domain.Run) (time.Time, bool) {
+	seconds := 0
+	switch {
+	case run.Budget.WallSeconds > 0:
+		seconds = int(run.Budget.WallSeconds)
+	case s.config.MaxRunWallSeconds > 0:
+		seconds = s.config.MaxRunWallSeconds
+	default:
+		return time.Time{}, false
+	}
+	start := run.CreatedAt
+	if start.IsZero() {
+		start = run.UpdatedAt
+	}
+	if start.IsZero() {
+		return time.Time{}, false
+	}
+	return start.Add(time.Duration(seconds) * time.Second), true
+}
+
 func (s *Service) finishCancellation(ctx context.Context, run domain.Run) error {
 	if _, err := s.store.CancelRunSteps(ctx, run.TenantID, run.ID, s.clock.Now()); err != nil {
 		return err
@@ -468,6 +548,10 @@ func (s *Service) transition(ctx context.Context, run domain.Run, next domain.Ru
 }
 
 func (s *Service) transitionRun(ctx context.Context, run domain.Run, next domain.RunStatus, verdict domain.Verdict, eventType domain.EventType, payload map[string]any) (domain.Run, error) {
+	return s.transitionRunWithFailure(ctx, run, next, verdict, "", "", eventType, payload)
+}
+
+func (s *Service) transitionRunWithFailure(ctx context.Context, run domain.Run, next domain.RunStatus, verdict domain.Verdict, failureClass domain.ErrorClass, failureMessage string, eventType domain.EventType, payload map[string]any) (domain.Run, error) {
 	if !run.Status.CanTransitionTo(next) {
 		return run, &domain.StateTransitionError{Resource: "run " + run.ID.String(), From: string(run.Status), To: string(next)}
 	}
@@ -477,7 +561,8 @@ func (s *Service) transitionRun(ctx context.Context, run domain.Run, next domain
 	}
 	return s.store.UpdateRun(ctx, domain.RunUpdate{
 		TenantID: run.TenantID, RunID: run.ID, ExpectedVersion: run.StateVersion,
-		From: run.Status, To: next, Verdict: verdict, At: s.clock.Now(), Event: &event,
+		From: run.Status, To: next, Verdict: verdict, FailureClass: failureClass,
+		FailureMessage: failureMessage, At: s.clock.Now(), Event: &event,
 	})
 }
 

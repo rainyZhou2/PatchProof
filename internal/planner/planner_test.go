@@ -632,10 +632,10 @@ func TestPlanFuzzBudgetOptions(t *testing.T) {
 	result := plan(t, p, request)
 	steps := stepsByKey(t, result)
 	alpha := steps["differential-contract-alpha"]
-	if got := alpha.Options[stepopts.FuzzSeconds]; got != "120" {
-		t.Fatalf("fuzz seconds = %q, want 120", got)
+	if got := alpha.Options[stepopts.FuzzSeconds]; got != "60" {
+		t.Fatalf("fuzz seconds = %q, want 60", got)
 	}
-	if alpha.Requirements.DeadlineSeconds != 240 {
+	if alpha.Requirements.DeadlineSeconds != 180 {
 		t.Fatalf("differential deadline = %d, want fuzz+120", alpha.Requirements.DeadlineSeconds)
 	}
 }
@@ -733,5 +733,100 @@ func TestPlanContractWithOnlyDomainRefReproduction(t *testing.T) {
 	}
 	if _, err := p.Plan(context.Background(), request); err != nil {
 		t.Fatalf("valid ref-only contract rejected: %v", err)
+	}
+}
+
+func TestPlanUsesPolicyMinimumEvidenceLevels(t *testing.T) {
+	p := newPlanner(t, planner.Limits{MaxStepCount: 64})
+	request := testRequest()
+	request.Policy.Spec.Verification.MinimumEvidenceLevels = map[string]string{
+		"compile":           string(domain.ClaimProven),
+		"regression-test":   string(domain.ClaimProven),
+		"differential-fuzz": string(domain.ClaimProven),
+	}
+	result := plan(t, p, request)
+	claims := make(map[domain.ClaimID]domain.Claim, len(result.Claims))
+	for _, claim := range result.Claims {
+		claims[claim.ID] = claim
+	}
+	for _, id := range []domain.ClaimID{"compile", "regression", "contract-alpha", "contract-beta"} {
+		claim, ok := claims[id]
+		if !ok {
+			t.Fatalf("claim %s is missing", id)
+		}
+		if claim.MinimumResult != domain.ClaimProven {
+			t.Fatalf("claim %s minimum = %s, want PROVEN", id, claim.MinimumResult)
+		}
+	}
+}
+
+func TestPlanNativeFuzzSteps(t *testing.T) {
+	p := newPlanner(t, planner.Limits{MaxStepCount: 64})
+	request := testRequest()
+	request.Policy.Spec.Verification.Required = []string{"compile", "native-fuzz"}
+	request.Decision.RequiredChecks = []string{"compile", "native-fuzz"}
+	request.Run.RequestedChecks = []string{"compile", "native-fuzz"}
+	result := plan(t, p, request)
+	steps := stepsByKey(t, result)
+	for _, key := range []string{"native-fuzz-contract-alpha", "native-fuzz-contract-beta"} {
+		step, ok := steps[key]
+		if !ok {
+			t.Fatalf("step %s is missing: %v", key, sortedStepKeys(result))
+		}
+		if step.Requirements.Engine != "go-native-fuzz" {
+			t.Fatalf("step %s engine = %s", key, step.Requirements.Engine)
+		}
+		if step.Options[stepopts.CheckName] != "native-fuzz" || step.Options[stepopts.ClaimID] != "native-fuzz" {
+			t.Fatalf("step %s options = %v", key, step.Options)
+		}
+	}
+	if _, ok := steps["differential-contract-alpha"]; ok {
+		t.Fatal("native-fuzz must not plan differential steps")
+	}
+	claim, ok := claimsByID(result)["native-fuzz"]
+	if !ok || !claim.Required || claim.MinimumResult != domain.ClaimTested {
+		t.Fatalf("native-fuzz claim = %+v", claim)
+	}
+}
+
+func TestPlanReplayPinsContractAndInput(t *testing.T) {
+	p := newPlanner(t, planner.Limits{MaxStepCount: 64})
+	request := testRequest()
+	request.Run.Replay = &domain.ReplaySpec{
+		SourceRunID: domain.NewRunID(),
+		CaseID:      "ce-abc",
+		ClaimID:     "contract-alpha",
+		InputRef:    domain.NewCASRef(strings.Repeat("9", 64), 12),
+		InputCodec:  "json-args/v1",
+	}
+	result := plan(t, p, request)
+	steps := stepsByKey(t, result)
+	alpha, ok := steps["differential-contract-alpha"]
+	if !ok {
+		t.Fatal("replay step is missing")
+	}
+	if _, ok := steps["differential-contract-beta"]; ok {
+		t.Fatal("replay must plan only the matching contract")
+	}
+	if got := alpha.Options[stepopts.ReplayCase]; got != "ce-abc" {
+		t.Fatalf("replay.case = %q", got)
+	}
+	if got := alpha.Options[stepopts.InputPrefix+"replay"]; got != request.Run.Replay.InputRef.URI() {
+		t.Fatalf("replay input = %q", got)
+	}
+}
+
+func TestPlanReplayRejectsUnknownClaim(t *testing.T) {
+	p := newPlanner(t, planner.Limits{MaxStepCount: 64})
+	request := testRequest()
+	request.Run.Replay = &domain.ReplaySpec{
+		SourceRunID: domain.NewRunID(),
+		CaseID:      "ce-abc",
+		ClaimID:     "missing-contract",
+		InputRef:    domain.NewCASRef(strings.Repeat("9", 64), 12),
+		InputCodec:  "json-args/v1",
+	}
+	if _, err := p.Plan(context.Background(), request); err == nil {
+		t.Fatal("unknown replay claim should be rejected")
 	}
 }

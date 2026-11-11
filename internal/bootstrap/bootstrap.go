@@ -120,8 +120,12 @@ func NewEngines(cfg config.Config) (*engine.Registry, error) {
 		for _, key := range envKeys {
 			env = append(env, key+"="+pluginConfig.Env[key])
 		}
+		version := pluginConfig.Version
+		if version == "" {
+			version = "external"
+		}
 		external, err := pluginengine.New(pluginengine.Config{
-			Name: pluginConfig.Name, Version: "external", Command: pluginConfig.Command,
+			Name: pluginConfig.Name, Version: version, Command: pluginConfig.Command,
 			Env: env, Languages: pluginConfig.Languages, Kinds: kinds,
 			MaxFrameBytes: pluginConfig.MaxFrameBytes, Timeout: pluginConfig.Timeout,
 		})
@@ -131,6 +135,22 @@ func NewEngines(cfg config.Config) (*engine.Registry, error) {
 		registry.Register(external)
 	}
 	return registry, nil
+}
+
+// EngineVersions returns the declared version of every engine reachable by
+// this deployment. Workers and controllers must agree on the value because it
+// is part of the action cache key.
+func EngineVersions(cfg config.Config) (map[string]string, error) {
+	registry, err := NewEngines(cfg)
+	if err != nil {
+		return nil, err
+	}
+	capabilities := registry.Capabilities()
+	versions := make(map[string]string, len(capabilities))
+	for _, capability := range capabilities {
+		versions[capability.Name] = capability.Version
+	}
+	return versions, nil
 }
 
 func NewWorker(cfg config.Config, store ports.ArtifactStore, engines *engine.Registry, logger *slog.Logger) (*worker.Runner, error) {
@@ -355,9 +375,15 @@ func EnsureLocalCluster(ctx context.Context, store ports.MetadataStore, cfg conf
 		return domain.Cluster{}, err
 	}
 	for _, cluster := range clusters {
-		if cluster.ID == "local" {
-			return cluster, nil
+		if cluster.ID != "local" {
+			continue
 		}
+		cluster.LastHeartbeat = now
+		cluster.Healthy = true
+		if err := store.UpsertCluster(ctx, cluster); err != nil {
+			return domain.Cluster{}, err
+		}
+		return cluster, nil
 	}
 	cluster := domain.Cluster{
 		ID: "local", Region: cfg.Service.Region, ExecutorKind: "local",
@@ -372,6 +398,34 @@ func EnsureLocalCluster(ctx context.Context, store ports.MetadataStore, cfg conf
 		return domain.Cluster{}, err
 	}
 	return cluster, nil
+}
+
+// LocalClusterHeartbeat keeps the in-process executor visible to placement.
+func LocalClusterHeartbeat(store ports.MetadataStore, cfg config.Config, logger *slog.Logger) func(context.Context) error {
+	interval := cfg.Worker.Heartbeat
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	if stale := cfg.Scheduler.ClusterStaleAfter; stale > 0 && interval > stale/3 {
+		interval = stale / 3
+	}
+	if interval < time.Second {
+		interval = time.Second
+	}
+	return func(ctx context.Context) error {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			if _, err := EnsureLocalCluster(ctx, store, cfg, time.Now().UTC()); err != nil && ctx.Err() == nil {
+				logger.Warn("local cluster heartbeat failed", slog.String("error", err.Error()))
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+		}
+	}
 }
 
 func Readiness(store ports.MetadataStore, artifacts ports.ArtifactStore, bus ports.EventBus) func(context.Context) error {

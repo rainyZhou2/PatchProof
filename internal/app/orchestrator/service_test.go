@@ -576,3 +576,43 @@ func TestSnapshotDigestIsDeterministic(t *testing.T) {
 		t.Fatal("snapshot digest does not depend on ordering")
 	}
 }
+
+func TestRunWatchdogTerminatesOverdueRun(t *testing.T) {
+	fixture := newOrchestratorFixture(t, ports.PolicyDecision{Allowed: true})
+	ctx := context.Background()
+
+	overdue := fixture.run
+	overdue.ID = domain.NewRunID()
+	overdue.RequestKey = "overdue-" + overdue.ID.String()
+	overdue.CreatedAt = orchestratorTestNow.Add(-2 * time.Hour)
+	overdue.UpdatedAt = overdue.CreatedAt
+	overdue.Budget.WallSeconds = 60
+	created, err := fixture.store.CreateRun(ctx, domain.CreateRunRecord{Run: overdue})
+	if err != nil {
+		t.Fatalf("create overdue run: %v", err)
+	}
+
+	if err := fixture.service.process(ctx, created); err != nil {
+		t.Fatalf("process overdue run: %v", err)
+	}
+	updated, err := fixture.store.GetRun(ctx, created.TenantID, created.ID)
+	if err != nil {
+		t.Fatalf("get overdue run: %v", err)
+	}
+	if updated.Status != domain.RunInfraFailed {
+		t.Fatalf("status = %s, want INFRA_FAILED", updated.Status)
+	}
+	if updated.Verdict != domain.VerdictInfraFailed {
+		t.Fatalf("verdict = %s, want INFRA_FAILED", updated.Verdict)
+	}
+	if updated.FailureClass != domain.ErrTimeout {
+		t.Fatalf("failure class = %s, want TIMEOUT", updated.FailureClass)
+	}
+	report, err := fixture.store.GetReport(ctx, created.TenantID, created.ID)
+	if err != nil {
+		t.Fatalf("timeout run has no report: %v", err)
+	}
+	if report.Verdict != domain.VerdictInfraFailed {
+		t.Fatalf("report verdict = %s, want INFRA_FAILED", report.Verdict)
+	}
+}

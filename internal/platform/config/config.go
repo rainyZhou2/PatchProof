@@ -165,6 +165,7 @@ type ExecutionConfig struct {
 
 type PluginConfig struct {
 	Name          string            `yaml:"name" json:"name"`
+	Version       string            `yaml:"version,omitempty" json:"version,omitempty"`
 	Command       []string          `yaml:"command" json:"command"`
 	Env           map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	Languages     []string          `yaml:"languages" json:"languages"`

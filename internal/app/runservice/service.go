@@ -52,6 +52,7 @@ type SubmitInput struct {
 	PolicyDigest    string
 	RequestedChecks []string
 	Budget          domain.Budget
+	Replay          *domain.ReplaySpec
 	Region          string
 	CreatedBy       string
 }
@@ -106,6 +107,14 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (domain.Run, er
 	if region == "" {
 		region = tenant.HomeRegion
 	}
+	var replay *domain.ReplaySpec
+	if input.Replay != nil {
+		spec := input.Replay.Normalized()
+		if err := spec.Validate(); err != nil {
+			return domain.Run{}, err
+		}
+		replay = &spec
+	}
 	request := domain.RunRequest{
 		TenantID:        input.TenantID,
 		ProjectID:       input.ProjectID,
@@ -118,6 +127,7 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (domain.Run, er
 		PolicyDigest:    digest,
 		RequestedChecks: checks,
 		Budget:          budget,
+		Replay:          replay,
 		Region:          region,
 		CreatedBy:       input.CreatedBy,
 	}
@@ -143,6 +153,7 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (domain.Run, er
 		PolicyRef:       request.PolicyRef,
 		RequestedChecks: checks,
 		Budget:          budget,
+		Replay:          replay,
 		Status:          domain.RunCreated,
 		StateVersion:    0,
 		Region:          region,
@@ -164,7 +175,9 @@ func (s *Service) Submit(ctx context.Context, input SubmitInput) (domain.Run, er
 	if err != nil {
 		return domain.Run{}, err
 	}
-	created, err := s.store.CreateRun(ctx, domain.CreateRunRecord{Run: run, Events: []domain.OutboxEvent{event}})
+	created, err := s.store.CreateRun(ctx, domain.CreateRunRecord{
+		Run: run, Events: []domain.OutboxEvent{event}, MaxActiveRuns: tenant.Quota.MaxConcurrentRuns,
+	})
 	if err != nil {
 		return domain.Run{}, err
 	}
@@ -298,14 +311,15 @@ func normalizeChecks(checks []string) ([]string, error) {
 
 func fingerprintOf(request domain.RunRequest) (string, error) {
 	return evidence.CanonicalDigest(struct {
-		ProjectID       domain.ProjectID `json:"project_id"`
-		BaseCommit      string           `json:"base_commit"`
-		HeadCommit      string           `json:"head_commit"`
-		PatchDigest     string           `json:"patch_digest"`
-		PolicyDigest    string           `json:"policy_digest"`
-		RequestedChecks []string         `json:"requested_checks"`
-		Budget          domain.Budget    `json:"budget"`
-		Region          string           `json:"region"`
+		ProjectID       domain.ProjectID   `json:"project_id"`
+		BaseCommit      string             `json:"base_commit"`
+		HeadCommit      string             `json:"head_commit"`
+		PatchDigest     string             `json:"patch_digest"`
+		PolicyDigest    string             `json:"policy_digest"`
+		RequestedChecks []string           `json:"requested_checks"`
+		Budget          domain.Budget      `json:"budget"`
+		Replay          *domain.ReplaySpec `json:"replay,omitempty"`
+		Region          string             `json:"region"`
 	}{
 		ProjectID:       request.ProjectID,
 		BaseCommit:      strings.ToLower(request.BaseCommit),
@@ -314,6 +328,7 @@ func fingerprintOf(request domain.RunRequest) (string, error) {
 		PolicyDigest:    request.PolicyDigest,
 		RequestedChecks: request.RequestedChecks,
 		Budget:          request.Budget,
+		Replay:          request.Replay,
 		Region:          request.Region,
 	})
 }

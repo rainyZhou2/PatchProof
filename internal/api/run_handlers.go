@@ -322,12 +322,20 @@ func (s *Server) handleReproduction(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "CASE_NOT_REPRODUCED", "counterexample was not reproduced and cannot be replayed")
 		return
 	}
+	if found.ClaimID == "native-fuzz" {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "CASE_NOT_REPLAYABLE", "native fuzz counterexamples do not support controlled replay")
+		return
+	}
 	reproduction, err := s.deps.Runs.Submit(r.Context(), runservice.SubmitInput{
 		TenantID: run.TenantID, ProjectID: run.ProjectID,
 		RequestKey: "repro-" + run.ID.String() + "-" + body.CaseID,
 		BaseCommit: run.BaseCommit, HeadCommit: run.HeadCommit, PatchDigest: run.PatchDigest,
 		PolicyDigest: run.PolicyDigest, RequestedChecks: []string{"differential-fuzz"},
 		Budget: run.Budget, Region: run.Region, CreatedBy: actor,
+		Replay: &domain.ReplaySpec{
+			SourceRunID: run.ID, CaseID: found.CaseID, ClaimID: found.ClaimID,
+			InputRef: found.InputRef, InputCodec: found.InputCodec,
+		},
 	})
 	if err != nil {
 		writeError(w, r, err)

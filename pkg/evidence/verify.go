@@ -502,14 +502,60 @@ func verifyPolicy(result *VerificationResult, report domain.Report, policy *doma
 				return
 			}
 		}
-		for _, claim := range report.Claims {
-			if claim.Required && !claim.Result.Satisfies(claim.MinimumResult) {
-				result.failed("policy", fmt.Sprintf("required claim %s does not satisfy its minimum evidence level", claim.ClaimID))
+		for _, check := range required {
+			claims := claimsForCheck(*policy, report, check)
+			if len(claims) == 0 {
+				result.failed("policy", fmt.Sprintf("required check %q has no required claim in the report", check))
 				return
+			}
+			minimum := policy.MinimumLevel(check)
+			for _, claim := range claims {
+				if !claim.Result.Satisfies(minimum) {
+					result.failed("policy", fmt.Sprintf("claim %s reached %s but policy requires %s for check %q", claim.ClaimID, claim.Result, minimum, check))
+					return
+				}
+				if !claim.MinimumResult.Satisfies(minimum) {
+					result.failed("policy", fmt.Sprintf("claim %s declares minimum %s below policy minimum %s for check %q", claim.ClaimID, claim.MinimumResult, minimum, check))
+					return
+				}
 			}
 		}
 	}
 	result.ok("policy", "trusted policy requirements are reflected in the report")
+}
+
+func claimsForCheck(policy domain.PolicyDocument, report domain.Report, check string) []domain.ClaimAssessment {
+	ids := make(map[domain.ClaimID]struct{})
+	switch domain.NormalizeCheckName(check) {
+	case "compile":
+		ids["compile"] = struct{}{}
+	case "regression-test":
+		ids["regression"] = struct{}{}
+	case "security-scan":
+		ids["security-scan"] = struct{}{}
+	case "protected-assets":
+		ids["protected-assets"] = struct{}{}
+	case "bounded-smt":
+		ids["bounded-smt"] = struct{}{}
+	case "native-fuzz":
+		ids["native-fuzz"] = struct{}{}
+	case "differential-fuzz":
+		for _, contract := range policy.Spec.Verification.Contracts {
+			ids[domain.ClaimID(contract.ID)] = struct{}{}
+		}
+	default:
+		return nil
+	}
+	out := make([]domain.ClaimAssessment, 0, len(ids))
+	for _, claim := range report.Claims {
+		if !claim.Required {
+			continue
+		}
+		if _, ok := ids[claim.ClaimID]; ok {
+			out = append(out, claim)
+		}
+	}
+	return out
 }
 
 func verifyVerdict(result *VerificationResult, report domain.Report) {

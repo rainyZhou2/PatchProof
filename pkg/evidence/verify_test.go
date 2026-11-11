@@ -516,3 +516,45 @@ func TestVerifyReportReportsMissingLeaf(t *testing.T) {
 	}
 	assertIssueContains(t, result, "missing")
 }
+
+func TestVerifyPolicyEnforcesMinimumEvidenceLevels(t *testing.T) {
+	policy := domain.PolicyDocument{
+		APIVersion: domain.PolicyAPIVersion,
+		Kind:       "VerificationPolicy",
+		Metadata:   domain.PolicyMetadata{Name: "minimum-levels"},
+		Spec: domain.PolicySpec{
+			Verification: domain.VerificationSpec{
+				Required:              []string{"compile"},
+				MinimumEvidenceLevels: map[string]string{"compile": string(domain.ClaimProven)},
+			},
+		},
+	}
+	digest, err := policy.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := domain.Report{
+		Verdict:         domain.VerdictVerified,
+		PolicyDigest:    digest,
+		RequestedChecks: []string{"compile"},
+		CompletedChecks: []string{"compile"},
+		Claims: []domain.ClaimAssessment{{
+			ClaimID: "compile", Kind: domain.ClaimKindCompile, Required: true,
+			MinimumResult: domain.ClaimTested, Result: domain.ClaimTested,
+		}},
+	}
+
+	var tested VerificationResult
+	verifyPolicy(&tested, report, &policy)
+	if !hasCheckStatus(tested, "policy", CheckFailed) {
+		t.Fatalf("policy with TESTED evidence passed a PROVEN minimum: %+v", tested.Checks)
+	}
+
+	report.Claims[0].Result = domain.ClaimProven
+	report.Claims[0].MinimumResult = domain.ClaimProven
+	var proven VerificationResult
+	verifyPolicy(&proven, report, &policy)
+	if !hasCheckStatus(proven, "policy", CheckOK) {
+		t.Fatalf("policy with PROVEN evidence failed: %+v", proven.Checks)
+	}
+}

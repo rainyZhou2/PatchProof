@@ -12,6 +12,7 @@ import (
 	"github.com/patchproof/patchproof/internal/platform/telemetry"
 	"github.com/patchproof/patchproof/internal/ports"
 	"github.com/patchproof/patchproof/pkg/evidence"
+	"github.com/patchproof/patchproof/pkg/stepopts"
 )
 
 type Config struct {
@@ -371,6 +372,10 @@ func completedChecks(steps []domain.Step) []string {
 	set := map[string]struct{}{}
 	for _, step := range steps {
 		if step.Status != domain.StepSucceeded {
+			continue
+		}
+		if check := stepopts.Get(step.Options, stepopts.CheckName); check != "" {
+			set[domain.NormalizeCheckName(check)] = struct{}{}
 			continue
 		}
 		switch step.Kind {

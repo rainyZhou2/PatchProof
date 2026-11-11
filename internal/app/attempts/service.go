@@ -11,13 +11,14 @@ import (
 )
 
 type Service struct {
-	store        ports.MetadataStore
-	clock        ports.Clock
-	ttl          time.Duration
-	cacheEnabled bool
-	cacheTTL     time.Duration
-	cacheEpoch   string
-	workerImage  string
+	store          ports.MetadataStore
+	clock          ports.Clock
+	ttl            time.Duration
+	cacheEnabled   bool
+	cacheTTL       time.Duration
+	cacheEpoch     string
+	engineVersions map[string]string
+	workerImage    string
 }
 
 func New(store ports.MetadataStore, clock ports.Clock, ttl time.Duration) (*Service, error) {
@@ -35,10 +36,11 @@ func New(store ports.MetadataStore, clock ports.Clock, ttl time.Duration) (*Serv
 
 // ConfigureActionCache enables result reuse for cacheable steps completed
 // through the worker callback API.
-func (s *Service) ConfigureActionCache(enabled bool, ttl time.Duration, epoch, workerImage string) {
+func (s *Service) ConfigureActionCache(enabled bool, ttl time.Duration, epoch string, engineVersions map[string]string, workerImage string) {
 	s.cacheEnabled = enabled
 	s.cacheTTL = ttl
 	s.cacheEpoch = epoch
+	s.engineVersions = engineVersions
 	s.workerImage = workerImage
 }
 
@@ -101,16 +103,21 @@ func (s *Service) storeActionCache(ctx context.Context, step domain.Step, result
 	if err != nil {
 		return
 	}
-	key, err := actioncache.KeyForStep(step, run, s.cacheEpoch, s.workerImage)
-	if err != nil {
+	engineVersion := s.engineVersions[step.Requirements.Engine]
+	if engineVersion == "" {
 		return
 	}
-	engineVersion := s.cacheEpoch
 	for _, item := range result.Evidence {
 		if item.Engine.Version != "" {
-			engineVersion = item.Engine.Version
+			if item.Engine.Version != engineVersion {
+				return
+			}
 			break
 		}
+	}
+	key, err := actioncache.KeyForStep(step, run, s.cacheEpoch, engineVersion, s.workerImage)
+	if err != nil {
+		return
 	}
 	entry, err := actioncache.NewEntry(step.TenantID, key, step, engineVersion, result, s.cacheTTL, s.clock.Now())
 	if err != nil {

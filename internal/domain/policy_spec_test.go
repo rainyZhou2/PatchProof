@@ -378,7 +378,7 @@ func TestPolicyDocumentHelpers(t *testing.T) {
 	}
 
 	known := domain.KnownChecks()
-	if len(known) != 6 {
+	if len(known) != 7 {
 		t.Fatalf("known checks = %v", known)
 	}
 	for _, check := range known {

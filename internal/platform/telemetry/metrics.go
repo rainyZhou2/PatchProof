@@ -28,6 +28,7 @@ type Metrics struct {
 	OutboxPublished   *prometheus.CounterVec
 	OutboxFailures    *prometheus.CounterVec
 	LeaseExpired      *prometheus.CounterVec
+	RunExpired        *prometheus.CounterVec
 	ActiveRuns        *prometheus.GaugeVec
 	ActiveSteps       *prometheus.GaugeVec
 	HTTPRequests      *prometheus.CounterVec
@@ -90,6 +91,9 @@ func NewMetrics() *Metrics {
 	m.LeaseExpired = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "patchproof_lease_expired_total", Help: "Expired step leases reclaimed.",
 	}, []string{"region"})
+	m.RunExpired = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "patchproof_run_expired_total", Help: "Runs terminated for exceeding their wall-clock budget.",
+	}, []string{"region"})
 	m.ActiveRuns = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "patchproof_active_runs", Help: "Runs in non-terminal states.",
 	}, []string{"region", "status"})
@@ -114,7 +118,7 @@ func NewMetrics() *Metrics {
 		m.RunRequests, m.RunDuration, m.RunVerdicts, m.StepQueueWait, m.StepDuration,
 		m.StepRetries, m.SchedulerBacklog, m.WorkerUtilization, m.CASTransferBytes,
 		m.CacheHits, m.Counterexamples, m.EvidenceInvalid, m.PolicyBlock, m.OutboxPublished,
-		m.OutboxFailures, m.LeaseExpired, m.ActiveRuns, m.ActiveSteps, m.HTTPRequests,
+		m.OutboxFailures, m.LeaseExpired, m.RunExpired, m.ActiveRuns, m.ActiveSteps, m.HTTPRequests,
 		m.HTTPDuration, m.EngineErrors, m.inflightSteps,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)

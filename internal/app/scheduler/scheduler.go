@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,12 +27,14 @@ type Config struct {
 	PollInterval       time.Duration
 	MaxStepsPerTenant  int
 	MaxStepsPerCluster int
+	ClusterStaleAfter  time.Duration
 	MaxRunWallSeconds  int
 	CallbackURL        string
 	AttemptTokenTTL    time.Duration
 	ActionCacheEnabled bool
 	ActionCacheTTL     time.Duration
 	CacheEpoch         string
+	EngineVersions     map[string]string
 	WorkerImage        string
 	Clock              ports.Clock
 	Logger             *slog.Logger
@@ -52,13 +55,14 @@ type Service struct {
 }
 
 type trackedExecution struct {
-	ref       domain.AttemptRef
-	execRef   ports.ExecutionRef
-	spec      domain.StepSpec
-	cacheKey  string
-	startedAt time.Time
-	deadline  time.Time
-	cluster   domain.Cluster
+	ref           domain.AttemptRef
+	execRef       ports.ExecutionRef
+	spec          domain.StepSpec
+	cacheKey      string
+	engineVersion string
+	startedAt     time.Time
+	deadline      time.Time
+	cluster       domain.Cluster
 }
 
 func New(store ports.MetadataStore, executors ports.ExecutorFactory, placement ports.PlacementStrategy, tokens ports.AttemptTokens, cas ports.ArtifactStore, config Config, metrics *telemetry.Metrics) (*Service, error) {
@@ -94,6 +98,12 @@ func New(store ports.MetadataStore, executors ports.ExecutorFactory, placement p
 	}
 	if config.MaxStepsPerTenant <= 0 {
 		config.MaxStepsPerTenant = 64
+	}
+	if config.ClusterStaleAfter <= 0 {
+		config.ClusterStaleAfter = 90 * time.Second
+	}
+	if config.EngineVersions == nil {
+		config.EngineVersions = map[string]string{}
 	}
 	return &Service{
 		store: store, executors: executors, placement: placement, tokens: tokens, cas: cas,
@@ -208,6 +218,13 @@ func (s *Service) leaseSteps(ctx context.Context, tracker *tracker) error {
 	if err != nil {
 		return err
 	}
+	live := make([]domain.Cluster, 0, len(clusters))
+	for _, cluster := range clusters {
+		if cluster.Live(now, s.config.ClusterStaleAfter) {
+			live = append(live, cluster)
+		}
+	}
+	clusters = live
 	activeByCluster := tracker.countsByCluster()
 	tenantCounts := map[domain.TenantID]int{}
 	runCache := map[domain.RunID]domain.Run{}
@@ -268,6 +285,7 @@ func (s *Service) leaseSteps(ctx context.Context, tracker *tracker) error {
 			TenantID: step.TenantID, RunID: step.RunID, StepID: step.ID, AttemptID: attemptID,
 			ExpectedGeneration: step.Generation, Owner: s.config.OwnerID, TTL: s.config.LeaseTTL,
 			ClusterID: cluster.ID, Now: now, Priority: step.Priority,
+			MaxParallelSteps: run.Budget.MaxParallelSteps, MaxCPUSeconds: run.Budget.CPUSeconds,
 		})
 		if err != nil {
 			var leaseErr *domain.LeaseError
@@ -302,20 +320,31 @@ func (s *Service) leaseSteps(ctx context.Context, tracker *tracker) error {
 			s.metrics.StepQueueWait.WithLabelValues(s.region(run), string(step.Kind), cluster.ID.String()).Observe(now.Sub(step.CreatedAt).Seconds())
 		}
 		cacheKey := ""
+		engineVersion := ""
 		if s.config.ActionCacheEnabled && actioncache.Cacheable(step) {
-			if key, keyErr := actioncache.KeyForStep(step, run, s.config.CacheEpoch, s.config.WorkerImage); keyErr == nil {
+			engineVersion = s.engineVersion(step)
+			if engineVersion == "" {
+				s.logger.Warn("cacheable step has no engine version; skipping action cache", slog.String("step_id", step.ID.String()), slog.String("engine", step.Requirements.Engine))
+			} else if key, keyErr := actioncache.KeyForStep(step, run, s.config.CacheEpoch, engineVersion, s.config.WorkerImage); keyErr == nil {
 				cacheKey = key
 			}
 		}
-		tracker.add(trackedExecution{ref: lease.Ref(), execRef: execRef, spec: spec, cacheKey: cacheKey, startedAt: now, deadline: spec.Deadline, cluster: cluster})
+		tracker.add(trackedExecution{ref: lease.Ref(), execRef: execRef, spec: spec, cacheKey: cacheKey, engineVersion: engineVersion, startedAt: now, deadline: spec.Deadline, cluster: cluster})
 		activeByCluster[cluster.ID]++
 	}
 	return nil
 }
 
+func (s *Service) engineVersion(step domain.Step) string {
+	return strings.TrimSpace(s.config.EngineVersions[step.Requirements.Engine])
+}
+
 func (s *Service) selectCluster(step domain.Step, clusters []domain.Cluster, active map[domain.ClusterID]int) (domain.Cluster, bool) {
 	candidates := make([]domain.Cluster, 0, len(clusters))
 	for _, cluster := range clusters {
+		if !cluster.Live(s.clock.Now(), s.config.ClusterStaleAfter) {
+			continue
+		}
 		if !cluster.Supports(step.Requirements) {
 			continue
 		}
@@ -378,7 +407,94 @@ func (s *Service) buildSpec(ctx context.Context, run domain.Run, step domain.Ste
 		}
 		spec.NamedInputs = named
 	}
+	extra, err := s.declaredInputs(ctx, run, step)
+	if err != nil {
+		return domain.StepSpec{}, err
+	}
+	if len(extra) > 0 {
+		if spec.NamedInputs == nil {
+			spec.NamedInputs = make(map[string]domain.InputBinding, len(extra))
+		}
+		for name, binding := range extra {
+			spec.NamedInputs[name] = binding
+		}
+	}
 	return spec, nil
+}
+
+func (s *Service) declaredInputs(ctx context.Context, run domain.Run, step domain.Step) (map[string]domain.InputBinding, error) {
+	out := make(map[string]domain.InputBinding)
+	var dag *domain.DAG
+	for key, value := range step.Options {
+		if !strings.HasPrefix(key, stepopts.InputPrefix) {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(key, stepopts.InputPrefix))
+		if name == "" {
+			return nil, &domain.ValidationError{Field: "input", Reason: "input name must not be empty"}
+		}
+		value = strings.TrimSpace(value)
+		if strings.HasPrefix(value, "cas://") {
+			ref, err := domain.ParseCASURI(value)
+			if err != nil {
+				return nil, fmt.Errorf("input %s: %w", name, err)
+			}
+			scope := ports.SecurityScope{TenantID: run.TenantID, TrustDomain: "run", Region: run.Region}
+			info, err := s.cas.Stat(ctx, scope, ref)
+			if err != nil {
+				return nil, fmt.Errorf("input %s: %w", name, err)
+			}
+			out[name] = domain.InputBinding{Ref: info.Ref, Kind: "file"}
+			continue
+		}
+		separator := strings.IndexByte(value, '/')
+		if separator <= 0 || separator == len(value)-1 {
+			return nil, &domain.ValidationError{Field: "input", Reason: fmt.Sprintf("input %s must be a CAS URI or <step>/<output>", name)}
+		}
+		stepKey, outputKey := value[:separator], value[separator+1:]
+		if dag == nil {
+			loaded, err := s.store.GetDAG(ctx, run.TenantID, run.ID)
+			if err != nil {
+				return nil, err
+			}
+			dag = &loaded
+		}
+		source, ok := dagStepByKey(*dag, stepKey)
+		if !ok {
+			return nil, &domain.ValidationError{Field: "input", Reason: fmt.Sprintf("input %s references unknown step %q", name, stepKey)}
+		}
+		if !dependencyOf(*dag, step.ID, source.ID) {
+			return nil, &domain.ValidationError{Field: "input", Reason: fmt.Sprintf("input %s references step %q which is not a dependency", name, stepKey)}
+		}
+		manifest, err := domain.ParseOutputManifest(source.OutputManifest)
+		if err != nil {
+			return nil, fmt.Errorf("input %s: %w", name, err)
+		}
+		ref, ok := manifest.ArtifactForOutput(outputKey)
+		if !ok {
+			return nil, fmt.Errorf("input %s: step %q has no artifact for output %q", name, stepKey, outputKey)
+		}
+		out[name] = domain.InputBinding{Ref: ref, Kind: "file"}
+	}
+	return out, nil
+}
+
+func dagStepByKey(dag domain.DAG, key string) (domain.Step, bool) {
+	for _, step := range dag.Steps {
+		if step.Key == key {
+			return step, true
+		}
+	}
+	return domain.Step{}, false
+}
+
+func dependencyOf(dag domain.DAG, stepID, candidate domain.StepID) bool {
+	for _, dependency := range dag.Dependencies[stepID] {
+		if dependency == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) namedInputs(ctx context.Context, run domain.Run) (map[string]domain.InputBinding, error) {
@@ -487,19 +603,25 @@ func (s *Service) commitResult(ctx context.Context, execution trackedExecution, 
 		}
 		return err
 	}
-	if execution.cacheKey != "" && actioncache.Storable(result) {
-		engineVersion := s.config.CacheEpoch
+	if execution.cacheKey != "" && execution.engineVersion != "" && actioncache.Storable(result) {
+		engineVersion := execution.engineVersion
 		for _, item := range result.Evidence {
 			if item.Engine.Version != "" {
 				engineVersion = item.Engine.Version
 				break
 			}
 		}
-		stepForEntry := domain.Step{Kind: execution.spec.Kind, Requirements: execution.spec.Requirements}
-		entry, entryErr := actioncache.NewEntry(execution.ref.TenantID, execution.cacheKey, stepForEntry, engineVersion, result, s.config.ActionCacheTTL, s.clock.Now())
-		if entryErr == nil {
-			if putErr := s.store.PutActionCache(ctx, entry); putErr != nil {
-				s.logger.Warn("action cache write failed", slog.String("step_id", execution.ref.StepID.String()), slog.String("error", putErr.Error()))
+		if engineVersion != execution.engineVersion {
+			s.logger.Warn("engine version changed during execution; skipping action cache write",
+				slog.String("step_id", execution.ref.StepID.String()),
+				slog.String("expected", execution.engineVersion), slog.String("actual", engineVersion))
+		} else {
+			stepForEntry := domain.Step{Kind: execution.spec.Kind, Requirements: execution.spec.Requirements}
+			entry, entryErr := actioncache.NewEntry(execution.ref.TenantID, execution.cacheKey, stepForEntry, engineVersion, result, s.config.ActionCacheTTL, s.clock.Now())
+			if entryErr == nil {
+				if putErr := s.store.PutActionCache(ctx, entry); putErr != nil {
+					s.logger.Warn("action cache write failed", slog.String("step_id", execution.ref.StepID.String()), slog.String("error", putErr.Error()))
+				}
 			}
 		}
 	}
@@ -515,7 +637,11 @@ func (s *Service) commitResult(ctx context.Context, execution trackedExecution, 
 }
 
 func (s *Service) tryCachedStep(ctx context.Context, step domain.Step, run domain.Run, now time.Time) (bool, error) {
-	key, err := actioncache.KeyForStep(step, run, s.config.CacheEpoch, s.config.WorkerImage)
+	engineVersion := s.engineVersion(step)
+	if engineVersion == "" {
+		return false, nil
+	}
+	key, err := actioncache.KeyForStep(step, run, s.config.CacheEpoch, engineVersion, s.config.WorkerImage)
 	if err != nil {
 		return false, err
 	}
@@ -526,11 +652,17 @@ func (s *Service) tryCachedStep(ctx context.Context, step domain.Step, run domai
 		}
 		return false, err
 	}
+	if entry.EngineVersion != engineVersion {
+		s.logger.Warn("action cache entry engine version mismatch", slog.String("step_id", step.ID.String()),
+			slog.String("expected", engineVersion), slog.String("stored", entry.EngineVersion))
+		return false, nil
+	}
 	attemptID := domain.NewAttemptID()
 	lease, err := s.store.AcquireLease(ctx, domain.LeaseRequest{
 		TenantID: step.TenantID, RunID: step.RunID, StepID: step.ID, AttemptID: attemptID,
 		ExpectedGeneration: step.Generation, Owner: s.config.OwnerID, TTL: s.config.LeaseTTL,
 		Now: now, Priority: step.Priority,
+		MaxParallelSteps: run.Budget.MaxParallelSteps, MaxCPUSeconds: run.Budget.CPUSeconds,
 	})
 	if err != nil {
 		return false, nil

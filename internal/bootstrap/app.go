@@ -5,13 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	corev1 "k8s.io/api/core/v1"
 	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/google/uuid"
 
@@ -54,6 +55,7 @@ type App struct {
 	components []func(context.Context) error
 	closers    []func() error
 	readiness  func(context.Context) error
+	engines    map[string]string
 }
 
 type RunService interface {
@@ -123,6 +125,12 @@ func NewApp(ctx context.Context, cfg config.Config, logger *slog.Logger, metrics
 	app.readiness = Readiness(store, artifacts, bus)
 	needsAPI := role == config.RoleAPI || role == config.RoleAllInOne || role == config.RoleProof
 	needsController := role == config.RoleController || role == config.RoleAllInOne
+	engineVersions, err := EngineVersions(cfg)
+	if err != nil {
+		app.Close(context.Background())
+		return nil, err
+	}
+	app.engines = engineVersions
 	if cfg.Auth.Mode == "dev" && needsAPI {
 		if err := EnsureDevTenant(ctx, store, cfg); err != nil {
 			app.Close(context.Background())
@@ -167,6 +175,7 @@ func NewApp(ctx context.Context, cfg config.Config, logger *slog.Logger, metrics
 			app.Close(context.Background())
 			return nil, err
 		}
+		app.components = append(app.components, LocalClusterHeartbeat(store, cfg, logger))
 	}
 
 	if !options.DisableHTTP && app.API != nil {
@@ -236,7 +245,8 @@ func (a *App) buildController(cfg config.Config, logger *slog.Logger, metrics *t
 	orchestratorService, err := orchestrator.New(a.Store, plannerInstance, policyEngine, snapshotter, a.Artifacts, proofService, orchestrator.Config{
 		Region: cfg.Service.Region, Version: cfg.Service.Version, PollInterval: time.Second,
 		ValidationWorkers: 4, MaxRepositoriesBytes: cfg.Limits.MaxRepositoryBytes,
-		MaxChangedFiles: cfg.Limits.MaxChangedFiles, RequireAttestation: cfg.Signing.Require,
+		MaxChangedFiles: cfg.Limits.MaxChangedFiles, MaxRunWallSeconds: cfg.Limits.MaxRunWallSeconds,
+		RequireAttestation: cfg.Signing.Require,
 		SupportsBrokeredIO: cfg.Execution.BrokerImage != "", ShardCount: cfg.Scheduler.ShardCount, Logger: logger,
 	}, metrics)
 	if err != nil {
@@ -251,10 +261,11 @@ func (a *App) buildController(cfg config.Config, logger *slog.Logger, metrics *t
 		BatchSize: cfg.Scheduler.BatchSize, LeaseTTL: cfg.Scheduler.LeaseTTL,
 		ShardLeaseTTL: 30 * time.Second, PollInterval: cfg.Scheduler.PollInterval,
 		MaxStepsPerTenant: cfg.Scheduler.MaxStepsPerTenant, MaxStepsPerCluster: cfg.Scheduler.MaxStepsPerCluster,
+		ClusterStaleAfter: cfg.Scheduler.ClusterStaleAfter,
 		MaxRunWallSeconds: cfg.Limits.MaxRunWallSeconds, CallbackURL: callbackURL(cfg),
 		AttemptTokenTTL:    cfg.Auth.AttemptTokenTTL,
 		ActionCacheEnabled: cfg.Scheduler.ActionCacheEnabled, ActionCacheTTL: cfg.Scheduler.ActionCacheTTL,
-		CacheEpoch: cacheEpoch(cfg), WorkerImage: cfg.Execution.WorkerImage,
+		CacheEpoch: cacheEpoch(cfg), EngineVersions: a.engines, WorkerImage: cfg.Execution.WorkerImage,
 		Logger: logger,
 	}, metrics)
 	if err != nil {
@@ -307,7 +318,7 @@ func (a *App) buildAPI(cfg config.Config, logger *slog.Logger, metrics *telemetr
 	if err != nil {
 		return err
 	}
-	attemptService.ConfigureActionCache(cfg.Scheduler.ActionCacheEnabled, cfg.Scheduler.ActionCacheTTL, cacheEpoch(cfg), cfg.Execution.WorkerImage)
+	attemptService.ConfigureActionCache(cfg.Scheduler.ActionCacheEnabled, cfg.Scheduler.ActionCacheTTL, cacheEpoch(cfg), a.engines, cfg.Execution.WorkerImage)
 	reporters := map[string]ports.Reporter{
 		"json": jsonreport.New(), "markdown": markdownreport.New(), "sarif": sarifreport.New(),
 	}

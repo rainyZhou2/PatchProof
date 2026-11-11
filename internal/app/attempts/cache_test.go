@@ -12,7 +12,7 @@ import (
 
 func TestCompleteWritesActionCache(t *testing.T) {
 	fixture := newAttemptFixture(t)
-	fixture.service.ConfigureActionCache(true, time.Hour, "epoch-1", "worker@sha256:test")
+	fixture.service.ConfigureActionCache(true, time.Hour, "epoch-1", map[string]string{"go-build": "test-version"}, "worker@sha256:test")
 	ctx := context.Background()
 	if err := fixture.service.Start(ctx, fixture.ref); err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func TestCompleteWritesActionCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := actioncache.KeyForStep(step, run, "epoch-1", "worker@sha256:test")
+	key, err := actioncache.KeyForStep(step, run, "epoch-1", "test-version", "worker@sha256:test")
 	if err != nil {
 		t.Fatal(err)
 	}

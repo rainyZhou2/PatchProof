@@ -114,6 +114,7 @@ var knownChecks = map[string]StepKind{
 	"compile":           StepKindCompile,
 	"regression-test":   StepKindRegression,
 	"differential-fuzz": StepKindDifferential,
+	"native-fuzz":       StepKindDifferential,
 	"bounded-smt":       StepKindBoundedSMT,
 	"protected-assets":  StepKindPolicy,
 	"security-scan":     StepKindSecurity,

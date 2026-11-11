@@ -136,6 +136,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 	compileEngine, compileLanguage := b.engineFor("compile", "go-build", "go")
 	regressionEngine, regressionLanguage := b.engineFor("regression", compileEngine, compileLanguage)
 	securityEngine, securityLanguage := b.engineFor("security", "go-security", "go")
+	fuzzEngine, fuzzLanguage := b.engineFor("fuzz", "go-native-fuzz", "go")
 
 	staticClaim, err := b.addClaim(claimDefinition{
 		id:        "static-analysis",
@@ -192,7 +193,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 		memory:   4096,
 		disk:     10,
 		timeout:  900,
-		options:  map[string]string{stepopts.ClaimID: "compile", "target": "base", "cache.enabled": "true"},
+		options:  map[string]string{stepopts.ClaimID: "compile", "target": "base", "cache.enabled": "true", stepopts.CheckName: "compile"},
 	})
 	if err != nil {
 		return err
@@ -207,7 +208,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 		memory:   4096,
 		disk:     10,
 		timeout:  900,
-		options:  map[string]string{stepopts.ClaimID: "compile", "target": "head", "cache.enabled": "true"},
+		options:  map[string]string{stepopts.ClaimID: "compile", "target": "head", "cache.enabled": "true", stepopts.CheckName: "compile"},
 	})
 	if err != nil {
 		return err
@@ -219,7 +220,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 		predicate: "go build succeeds for all declared package patterns",
 		domain:    "all packages matched by the configured build pattern",
 		language:  compileLanguage,
-		min:       domain.ClaimTested,
+		min:       b.minimumEvidence("compile", domain.ClaimTested),
 		required:  true,
 	}); err != nil {
 		return err
@@ -231,9 +232,9 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			kind:      domain.ClaimKindTest,
 			title:     "Existing test suite passes on the patched snapshot",
 			predicate: "go test succeeds for the selected package patterns",
-			domain:    "packages selected by static impact analysis",
+			domain:    "packages selected by static impact analysis; falls back to the configured pattern set",
 			language:  regressionLanguage,
-			min:       domain.ClaimTested,
+			min:       b.minimumEvidence("regression-test", domain.ClaimTested),
 			required:  true,
 		}); err != nil {
 			return err
@@ -250,7 +251,11 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			timeout:     900,
 			preemptible: true,
 			dependsOn:   []domain.StepID{compileHead, impact},
-			options:     map[string]string{stepopts.ClaimID: "regression"},
+			options: map[string]string{
+				stepopts.ClaimID:                "regression",
+				stepopts.CheckName:              "regression-test",
+				stepopts.InputPrefix + "impact": "impact/impact.digest",
+			},
 		}); err != nil {
 			return err
 		}
@@ -261,7 +266,33 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 		if len(contracts) == 0 {
 			return &domain.ValidationError{Field: "policy.contracts", Reason: "differential-fuzz requires at least one contract"}
 		}
+	}
+	fuzzContracts := 0
+	contracts := b.policy.Spec.Verification.Contracts
+	if _, ok := required["differential-fuzz"]; ok {
+		if b.run.Replay != nil {
+			fuzzContracts++
+		} else {
+			fuzzContracts += len(contracts)
+		}
+	}
+	if _, ok := required["native-fuzz"]; ok {
+		if len(contracts) == 0 {
+			return &domain.ValidationError{Field: "policy.contracts", Reason: "native-fuzz requires at least one contract"}
+		}
+		fuzzContracts += len(contracts)
+	}
+	fuzzSeconds, fuzzTimeout, maxCases := b.fuzzAllocation(fuzzContracts, 600)
+
+	if _, ok := required["differential-fuzz"]; ok {
+		replayMatched := false
 		for _, contract := range contracts {
+			if b.run.Replay != nil && b.run.Replay.ClaimID != domain.ClaimID(contract.ID) {
+				continue
+			}
+			if b.run.Replay != nil {
+				replayMatched = true
+			}
 			contractRef := contract.DomainRef
 			if contractRef == "" {
 				contractRef = contract.OracleRef
@@ -282,6 +313,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			if contract.MinimumResult == string(domain.ClaimProven) {
 				minimum = domain.ClaimProven
 			}
+			minimum = b.minimumEvidence("differential-fuzz", minimum)
 			domainText := contract.Domain
 			if strings.TrimSpace(domainText) == "" {
 				domainText = "declared contract input domain (" + contractRef + ")"
@@ -306,6 +338,30 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			if err != nil {
 				return err
 			}
+			options := map[string]string{
+				stepopts.ClaimID:       string(claimID),
+				stepopts.CheckName:     "differential-fuzz",
+				stepopts.ContractID:    contract.ID,
+				stepopts.ContractRef:   contractRef,
+				stepopts.TargetSymbol:  contract.Symbol,
+				stepopts.InputDomain:   contract.Domain,
+				stepopts.Observable:    contract.Observable,
+				stepopts.FuzzSeconds:   fmt.Sprintf("%d", fuzzSeconds),
+				stepopts.MinimumResult: string(minimum),
+			}
+			if maxCases > 0 {
+				options[stepopts.FuzzMaxCases] = fmt.Sprintf("%d", maxCases)
+			}
+			if b.run.Replay != nil {
+				options[stepopts.FuzzSeconds] = "1"
+				options[stepopts.ReplayCase] = b.run.Replay.CaseID
+				options[stepopts.ReplayCodec] = b.run.Replay.InputCodec
+				options[stepopts.InputPrefix+"replay"] = b.run.Replay.InputRef.URI()
+			}
+			stepTimeout := fuzzTimeout
+			if b.run.Replay != nil {
+				stepTimeout = 600
+			}
 			if _, err := b.addStep(stepDefinition{
 				key:         "differential-" + slang(contract.ID),
 				kind:        domain.StepKindDifferential,
@@ -315,18 +371,58 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 				cpu:         2000,
 				memory:      4096,
 				disk:        10,
-				timeout:     b.fuzzTimeout(600),
+				timeout:     stepTimeout,
 				preemptible: true,
 				dependsOn:   []domain.StepID{compileBase, compileHead, impact},
+				options:     options,
+			}); err != nil {
+				return err
+			}
+		}
+		if b.run.Replay != nil && !replayMatched {
+			return &domain.ValidationError{Field: "replay.claim_id", Reason: "replay claim " + string(b.run.Replay.ClaimID) + " does not match any contract"}
+		}
+	}
+	if _, ok := required["native-fuzz"]; ok {
+		if _, err := b.addClaim(claimDefinition{
+			id:        "native-fuzz",
+			kind:      domain.ClaimKindTest,
+			title:     "Native fuzzing found no crashes",
+			predicate: "the head fuzz target does not panic for the declared contracts",
+			domain:    "contract seeds and type-directed generated inputs",
+			language:  fuzzLanguage,
+			min:       b.minimumEvidence("native-fuzz", domain.ClaimTested),
+			required:  true,
+		}); err != nil {
+			return err
+		}
+		for _, contract := range contracts {
+			contractRef := contract.DomainRef
+			if contractRef == "" {
+				contractRef = contract.OracleRef
+			}
+			if contractRef == "" {
+				return &domain.ValidationError{Field: "contract.domainRef", Reason: "contract " + contract.ID + " has no contract document reference"}
+			}
+			if _, err := b.addStep(stepDefinition{
+				key:         "native-fuzz-" + slang(contract.ID),
+				kind:        domain.StepKindDifferential,
+				engine:      fuzzEngine,
+				language:    fuzzLanguage,
+				priority:    74,
+				cpu:         2000,
+				memory:      4096,
+				disk:        10,
+				timeout:     fuzzTimeout,
+				preemptible: true,
+				dependsOn:   []domain.StepID{compileHead, impact},
 				options: map[string]string{
-					stepopts.ClaimID:       string(claimID),
-					stepopts.ContractID:    contract.ID,
-					stepopts.ContractRef:   contractRef,
-					stepopts.TargetSymbol:  contract.Symbol,
-					stepopts.InputDomain:   contract.Domain,
-					stepopts.Observable:    contract.Observable,
-					stepopts.FuzzSeconds:   fmt.Sprintf("%d", b.fuzzSeconds(30)),
-					stepopts.MinimumResult: string(minimum),
+					stepopts.ClaimID:      "native-fuzz",
+					stepopts.CheckName:    "native-fuzz",
+					stepopts.ContractRef:  contractRef,
+					stepopts.TargetSymbol: contract.Symbol,
+					stepopts.InputDomain:  contract.Domain,
+					stepopts.FuzzSeconds:  fmt.Sprintf("%d", fuzzSeconds),
 				},
 			}); err != nil {
 				return err
@@ -342,7 +438,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			predicate: "configured scanner reports no high severity findings",
 			domain:    "changed packages and their direct dependencies",
 			language:  securityLanguage,
-			min:       domain.ClaimTested,
+			min:       b.minimumEvidence("security-scan", domain.ClaimTested),
 			required:  true,
 		})
 		if err != nil {
@@ -359,7 +455,11 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			disk:      5,
 			timeout:   600,
 			dependsOn: []domain.StepID{impact},
-			options:   map[string]string{stepopts.ClaimID: string(claimID)},
+			options: map[string]string{
+				stepopts.ClaimID:                string(claimID),
+				stepopts.CheckName:              "security-scan",
+				stepopts.InputPrefix + "impact": "impact/impact.digest",
+			},
 		}); err != nil {
 			return err
 		}
@@ -372,7 +472,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			title:     "Patch does not modify protected assets",
 			predicate: "no changed path matches a protected path pattern",
 			domain:    "all files changed between base and head",
-			min:       domain.ClaimTested,
+			min:       b.minimumEvidence("protected-assets", domain.ClaimTested),
 			required:  true,
 		}); err != nil {
 			return err
@@ -386,7 +486,7 @@ func (b *dagBuilder) build(ctx context.Context, required map[string]struct{}) er
 			title:     "Bounded SMT properties hold",
 			predicate: "declared properties are proven within the encoded model",
 			domain:    "supported integer and boolean function subset",
-			min:       domain.ClaimProven,
+			min:       b.minimumEvidence("bounded-smt", domain.ClaimProven),
 			required:  false,
 		}); err != nil {
 			return err
@@ -570,25 +670,38 @@ func (b *dagBuilder) inputDigest(stepKey string, options map[string]string) (str
 	})
 }
 
-func (b *dagBuilder) fuzzTimeout(fallback int) int {
-	if b.policy.Spec.Budgets.FuzzCPUSeconds > 0 {
-		seconds := int(b.policy.Spec.Budgets.FuzzCPUSeconds)
-		if seconds+120 < fallback {
-			return seconds + 120
-		}
-	}
-	return fallback
+func (b *dagBuilder) minimumEvidence(check string, fallback domain.ClaimResult) domain.ClaimResult {
+	return domain.MaxClaimResult(fallback, b.policy.MinimumLevel(check))
 }
 
-func (b *dagBuilder) fuzzSeconds(fallback int) int {
-	if b.policy.Spec.Budgets.FuzzCPUSeconds > 0 {
-		value := int(b.policy.Spec.Budgets.FuzzCPUSeconds)
-		if value > 600 {
-			return 600
-		}
-		return value
+// fuzzAllocation divides the run fuzz budget across every fuzz step so the
+// declared budget is not multiplied by the number of contracts.
+func (b *dagBuilder) fuzzAllocation(steps, fallbackTimeout int) (seconds, timeout int, maxCases int64) {
+	if steps < 1 {
+		steps = 1
 	}
-	return fallback
+	seconds = 30
+	timeout = fallbackTimeout
+	if total := b.policy.Spec.Budgets.FuzzCPUSeconds; total > 0 {
+		seconds = int(total) / steps
+		if seconds < 1 {
+			seconds = 1
+		}
+		if seconds > 600 {
+			seconds = 600
+		}
+		timeout = seconds + 120
+		if timeout > fallbackTimeout {
+			timeout = fallbackTimeout
+		}
+	}
+	if totalCases := b.policy.Spec.Budgets.MaxFuzzCases; totalCases > 0 {
+		maxCases = totalCases / int64(steps)
+		if maxCases < 1 {
+			maxCases = 1
+		}
+	}
+	return seconds, timeout, maxCases
 }
 
 func (b *dagBuilder) engineFor(slot, fallbackEngine, fallbackLanguage string) (string, string) {
