@@ -171,9 +171,11 @@ func TestTamperedSignedReportIsRejected(t *testing.T) {
 	tenant := domain.TenantID("11111111-1111-4111-8111-111111111111")
 	runID := domain.RunID("22222222-2222-4222-8222-222222222222")
 	scope := ports.SecurityScope{TenantID: tenant, TrustDomain: "report", Region: "local"}
+	evidenceID := domain.NewEvidenceID()
 	claims := []domain.ClaimAssessment{{
 		ClaimID: "compile", Kind: domain.ClaimKindCompile, Title: "compiles", Required: true,
 		MinimumResult: domain.ClaimTested, Result: domain.ClaimTested, Scope: "all packages",
+		EvidenceIDs: []domain.EvidenceID{evidenceID},
 	}}
 	attestation := evidence.RunAttestation{
 		RunID: runID.String(), TenantID: tenant.String(), ProjectID: "33333333-3333-4333-8333-333333333333",
@@ -195,9 +197,21 @@ func TestTamperedSignedReportIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	evidenceRef, err := put(domain.Evidence{
+		SchemaVersion: domain.EvidenceSchemaV1, ID: evidenceID, TenantID: tenant, RunID: runID,
+		ClaimID: "compile", Kind: domain.EvidenceCompile, Result: domain.ClaimTested,
+		Scope:       domain.EvidenceScope{InputDomain: "all packages"},
+		Engine:      domain.EngineInfo{Name: "go-build", Version: "test"},
+		Environment: domain.EnvironmentInfo{Arch: "amd64", SandboxProfile: "isolated-container"},
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifest, err := evidence.BuildManifest([]evidence.Leaf{
 		{Path: "run.json", Digest: runRef.Digest, Size: runRef.SizeBytes},
 		{Path: "claims.json", Digest: claimsRef.Digest, Size: claimsRef.SizeBytes},
+		{Path: "evidence/" + evidenceID.String() + ".json", Digest: evidenceRef.Digest, Size: evidenceRef.SizeBytes},
 	})
 	if err != nil {
 		t.Fatal(err)

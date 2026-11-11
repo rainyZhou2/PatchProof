@@ -334,9 +334,33 @@ func TestVerifyReportUnknownKey(t *testing.T) {
 	assertIssueContains(t, result, "no valid trusted signature")
 }
 
-func TestVerifyReportRevokedKey(t *testing.T) {
+func TestVerifyReportRevokedAfterSigningRemainsHistorical(t *testing.T) {
 	b := buildBundle(t)
 	revokedAt := evGeneratedAt.Add(time.Minute)
+	trust := NewTrustStore()
+	if err := trust.Add(TrustedKey{
+		KeyID:     b.signer.keyID,
+		Identity:  "revoked signer",
+		PublicKey: b.signer.publicKey(),
+		RevokedAt: &revokedAt,
+	}); err != nil {
+		t.Fatalf("add trusted key: %v", err)
+	}
+	options := defaultVerifyOptions(b)
+	options.Trust = trust
+
+	result, err := VerifyReport(context.Background(), b.report, b.source, options)
+	if err != nil {
+		t.Fatalf("verify report: %v", err)
+	}
+	if result.Status != StatusValidIntegrity {
+		t.Fatalf("status = %s, want VALID_INTEGRITY for a signature made before revocation (issues: %v)", result.Status, result.Issues)
+	}
+}
+
+func TestVerifyReportRejectsSignatureAfterRevocation(t *testing.T) {
+	b := buildBundle(t)
+	revokedAt := evGeneratedAt.Add(-time.Minute)
 	trust := NewTrustStore()
 	if err := trust.Add(TrustedKey{
 		KeyID:     b.signer.keyID,
@@ -556,5 +580,96 @@ func TestVerifyPolicyEnforcesMinimumEvidenceLevels(t *testing.T) {
 	verifyPolicy(&proven, report, &policy)
 	if !hasCheckStatus(proven, "policy", CheckOK) {
 		t.Fatalf("policy with PROVEN evidence failed: %+v", proven.Checks)
+	}
+}
+
+func TestVerifyVerdictDeterministicFailureWithoutCounterexample(t *testing.T) {
+	report := domain.Report{
+		Verdict: domain.VerdictCounterexample,
+		Claims: []domain.ClaimAssessment{{
+			ClaimID: "compile", Kind: domain.ClaimKindCompile, Required: true,
+			MinimumResult: domain.ClaimTested, Result: domain.ClaimViolated,
+		}},
+	}
+	var result VerificationResult
+	verifyVerdict(&result, report)
+	if !hasCheckStatus(result, "verdict", CheckOK) {
+		t.Fatalf("compile violation without a replayable input should verify: %+v", result.Checks)
+	}
+}
+
+func TestVerifyVerdictDifferentialFailureNeedsCounterexample(t *testing.T) {
+	report := domain.Report{
+		Verdict: domain.VerdictCounterexample,
+		Claims: []domain.ClaimAssessment{{
+			ClaimID: "contract-alpha", Kind: domain.ClaimKindRegression, Required: true,
+			MinimumResult: domain.ClaimTested, Result: domain.ClaimViolated,
+		}},
+	}
+	var result VerificationResult
+	verifyVerdict(&result, report)
+	if !hasCheckStatus(result, "verdict", CheckFailed) {
+		t.Fatalf("differential violation without a reproduced counterexample must fail: %+v", result.Checks)
+	}
+}
+
+func TestVerifyVerdictVerifiedRequiresMinimumEvidence(t *testing.T) {
+	report := domain.Report{
+		Verdict: domain.VerdictVerified,
+		Claims: []domain.ClaimAssessment{{
+			ClaimID: "compile", Kind: domain.ClaimKindCompile, Required: true,
+			MinimumResult: domain.ClaimProven, Result: domain.ClaimTested,
+		}},
+	}
+	var result VerificationResult
+	verifyVerdict(&result, report)
+	if !hasCheckStatus(result, "verdict", CheckFailed) {
+		t.Fatalf("VERIFIED claim below its minimum must fail: %+v", result.Checks)
+	}
+}
+
+func TestVerifyVerdictVerifiedRequiresRequiredClaim(t *testing.T) {
+	report := domain.Report{Verdict: domain.VerdictVerified}
+	var result VerificationResult
+	verifyVerdict(&result, report)
+	if !hasCheckStatus(result, "verdict", CheckFailed) {
+		t.Fatalf("VERIFIED report without required claims must fail: %+v", result.Checks)
+	}
+}
+
+func TestCheckClaimEvidenceRejectsPositiveClaimWithoutEvidence(t *testing.T) {
+	claim := domain.ClaimAssessment{
+		ClaimID: "compile", Kind: domain.ClaimKindCompile, Required: true,
+		MinimumResult: domain.ClaimTested, Result: domain.ClaimTested,
+	}
+	if err := checkClaimEvidence(claim, nil); err == nil {
+		t.Fatal("positive claim without evidence was accepted")
+	}
+	if err := checkClaimEvidence(claim, []domain.ClaimResult{domain.ClaimViolated}); err == nil {
+		t.Fatal("positive claim backed only by violated evidence was accepted")
+	}
+	if err := checkClaimEvidence(claim, []domain.ClaimResult{domain.ClaimTested}); err != nil {
+		t.Fatalf("positive claim with matching evidence rejected: %v", err)
+	}
+	if err := checkClaimEvidence(domain.ClaimAssessment{ClaimID: "policy-admission", Result: domain.ClaimViolated}, nil); err != nil {
+		t.Fatalf("synthetic policy-admission claim should be exempt: %v", err)
+	}
+}
+
+func TestVerifyVerdictCounterexampleMustMatchViolatedClaim(t *testing.T) {
+	report := domain.Report{
+		Verdict: domain.VerdictCounterexample,
+		Claims: []domain.ClaimAssessment{{
+			ClaimID: "contract-alpha", Kind: domain.ClaimKindRegression, Required: true,
+			MinimumResult: domain.ClaimTested, Result: domain.ClaimViolated,
+		}},
+		Counterexamples: []domain.Counterexample{{
+			CaseID: "ce-1", ClaimID: "some-other-claim", Reproduced: true,
+		}},
+	}
+	var result VerificationResult
+	verifyVerdict(&result, report)
+	if !hasCheckStatus(result, "verdict", CheckFailed) {
+		t.Fatalf("counterexample bound to another claim must not verify the verdict: %+v", result.Checks)
 	}
 }

@@ -183,8 +183,8 @@ func VerifyReport(ctx context.Context, report domain.Report, source BlobSource, 
 	}
 	verifyClaims(ctx, source, &result, leaves, report)
 	verifyRun(ctx, source, &result, leaves, report)
-	verifyEvidence(ctx, source, &result, leaves, report)
-	verifyCounterexamples(ctx, source, &result, leaves, report)
+	verifyEvidence(ctx, source, &result, leaves, report, options.Deep)
+	verifyCounterexamples(ctx, source, &result, leaves, report, options.Deep)
 	verifyPolicy(&result, report, options.Policy)
 	verifyVerdict(&result, report)
 
@@ -230,7 +230,10 @@ func verifySignatures(result *VerificationResult, report domain.Report, statemen
 			result.unverifiable("signatures", fmt.Sprintf("signature %s references unknown key %q", signature.ID, signature.KeyID))
 			continue
 		}
-		if key.RevokedAt != nil && !signature.SignedAt.After(*key.RevokedAt) {
+		// A key that was revoked before the signature was produced must not be
+		// accepted. Signatures made while the key was still trusted remain
+		// verifiable as historical evidence.
+		if key.RevokedAt != nil && signature.SignedAt.After(*key.RevokedAt) {
 			result.failed("signatures", fmt.Sprintf("signature %s was produced by a revoked key", signature.ID))
 			continue
 		}
@@ -406,9 +409,10 @@ func verifyRun(ctx context.Context, source BlobSource, result *VerificationResul
 	result.ok("run", "run attestation matches the report")
 }
 
-func verifyEvidence(ctx context.Context, source BlobSource, result *VerificationResult, leaves map[string]Leaf, report domain.Report) {
+func verifyEvidence(ctx context.Context, source BlobSource, result *VerificationResult, leaves map[string]Leaf, report domain.Report, deep bool) {
 	count := 0
 	for _, claim := range report.Claims {
+		results := make([]domain.ClaimResult, 0, len(claim.EvidenceIDs))
 		for _, evidenceID := range claim.EvidenceIDs {
 			path := "evidence/" + evidenceID.String() + ".json"
 			leaf, ok := leaves[path]
@@ -437,13 +441,66 @@ func verifyEvidence(ctx context.Context, source BlobSource, result *Verification
 				result.failed("evidence", fmt.Sprintf("%s references claim %s, assessment is %s", path, evidence.ClaimID, claim.ClaimID))
 				return
 			}
+			if deep {
+				for _, artifact := range evidence.Artifacts {
+					if err := verifyReferencedBlob(ctx, source, artifact); err != nil {
+						result.failed("evidence", fmt.Sprintf("%s artifact %s: %v", path, artifact.URI(), err))
+						return
+					}
+				}
+			}
+			results = append(results, evidence.Result)
 			count++
+		}
+		if err := checkClaimEvidence(claim, results); err != nil {
+			result.failed("evidence", err.Error())
+			return
 		}
 	}
 	result.ok("evidence", fmt.Sprintf("%d evidence documents verified", count))
 }
 
-func verifyCounterexamples(ctx context.Context, source BlobSource, result *VerificationResult, leaves map[string]Leaf, report domain.Report) {
+// checkClaimEvidence requires a claim's assessment to be supported by its
+// evidence documents. A positive claim without evidence (or a violated claim
+// without a violating evidence document) cannot be trusted even if the report
+// is correctly signed: signing only proves who emitted the contradiction.
+func checkClaimEvidence(claim domain.ClaimAssessment, results []domain.ClaimResult) error {
+	// Policy admission is a synthetic claim emitted by the rejection path; it
+	// intentionally carries no evidence document.
+	if claim.ClaimID == "policy-admission" {
+		return nil
+	}
+	switch claim.Result {
+	case domain.ClaimTested:
+		if !hasEvidenceResult(results, func(r domain.ClaimResult) bool { return r.Satisfies(domain.ClaimTested) }) {
+			return fmt.Errorf("claim %s is TESTED_WITHIN_SCOPE but has no TESTED/PROVEN evidence", claim.ClaimID)
+		}
+	case domain.ClaimProven:
+		if !hasEvidenceResult(results, func(r domain.ClaimResult) bool { return r == domain.ClaimProven }) {
+			return fmt.Errorf("claim %s is PROVEN_WITHIN_MODEL but has no PROVEN evidence", claim.ClaimID)
+		}
+	case domain.ClaimViolated:
+		if !hasEvidenceResult(results, func(r domain.ClaimResult) bool { return r == domain.ClaimViolated }) {
+			return fmt.Errorf("claim %s is VIOLATED but has no VIOLATED evidence", claim.ClaimID)
+		}
+	case domain.ClaimInvalidEvidence:
+		if !hasEvidenceResult(results, func(r domain.ClaimResult) bool { return r == domain.ClaimInvalidEvidence }) {
+			return fmt.Errorf("claim %s is INVALID_EVIDENCE but has no invalid evidence", claim.ClaimID)
+		}
+	}
+	return nil
+}
+
+func hasEvidenceResult(results []domain.ClaimResult, predicate func(domain.ClaimResult) bool) bool {
+	for _, result := range results {
+		if predicate(result) {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyCounterexamples(ctx context.Context, source BlobSource, result *VerificationResult, leaves map[string]Leaf, report domain.Report, deep bool) {
 	for _, counterexample := range report.Counterexamples {
 		path := "counterexamples/" + counterexample.CaseID + ".json"
 		leaf, ok := leaves[path]
@@ -468,8 +525,36 @@ func verifyCounterexamples(ctx context.Context, source BlobSource, result *Verif
 			result.failed("counterexamples", fmt.Sprintf("%s does not match the report entry", path))
 			return
 		}
+		if deep {
+			for label, ref := range map[string]domain.CASRef{
+				"input": stored.InputRef, "base observation": stored.BaseObservationRef,
+				"head observation": stored.HeadObservationRef,
+			} {
+				if err := verifyReferencedBlob(ctx, source, ref); err != nil {
+					result.failed("counterexamples", fmt.Sprintf("%s %s: %v", path, label, err))
+					return
+				}
+			}
+		}
 	}
 	result.ok("counterexamples", fmt.Sprintf("%d counterexamples verified", len(report.Counterexamples)))
+}
+
+func verifyReferencedBlob(ctx context.Context, source BlobSource, ref domain.CASRef) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	data, err := readBlob(ctx, source, ref)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != ref.SizeBytes {
+		return fmt.Errorf("size %d does not match declared %d", len(data), ref.SizeBytes)
+	}
+	if sha256Sum(data) != ref.Hex() {
+		return fmt.Errorf("digest does not match %s", ref.URI())
+	}
+	return nil
 }
 
 func verifyPolicy(result *VerificationResult, report domain.Report, policy *domain.PolicyDocument) {
@@ -559,34 +644,66 @@ func claimsForCheck(policy domain.PolicyDocument, report domain.Report, check st
 }
 
 func verifyVerdict(result *VerificationResult, report domain.Report) {
+	requiredCount := 0
 	hasRequiredViolation := false
 	hasInvalid := false
+	hasUnsatisfied := false
+	counterexampleRequired := false
+	violatedClaims := make(map[domain.ClaimID]struct{})
 	for _, claim := range report.Claims {
 		if !claim.Required {
 			continue
 		}
+		requiredCount++
 		switch claim.Result {
 		case domain.ClaimViolated:
 			hasRequiredViolation = true
+			violatedClaims[claim.ClaimID] = struct{}{}
+			if claim.Kind == domain.ClaimKindRegression || claim.Kind == domain.ClaimKindFix {
+				counterexampleRequired = true
+			}
 		case domain.ClaimInvalidEvidence:
 			hasInvalid = true
+		default:
+			minimum := claim.MinimumResult
+			if minimum == "" || minimum == domain.ClaimNotRun || minimum == domain.ClaimUnknown {
+				minimum = domain.ClaimTested
+			}
+			if !claim.Result.Satisfies(minimum) {
+				hasUnsatisfied = true
+			}
 		}
 	}
-	reproduced := 0
+	reproducedForViolatedClaim := false
 	for _, counterexample := range report.Counterexamples {
-		if counterexample.Reproduced {
-			reproduced++
+		if !counterexample.Reproduced {
+			continue
+		}
+		if _, ok := violatedClaims[counterexample.ClaimID]; ok {
+			reproducedForViolatedClaim = true
 		}
 	}
 	switch report.Verdict {
 	case domain.VerdictVerified:
-		if hasRequiredViolation || hasInvalid {
-			result.failed("verdict", "VERIFIED_WITHIN_SCOPE contradicts claim results")
+		if requiredCount == 0 || hasRequiredViolation || hasInvalid || hasUnsatisfied {
+			result.failed("verdict", "VERIFIED_WITHIN_SCOPE contradicts claim results or minimum evidence levels")
 			return
 		}
 	case domain.VerdictCounterexample:
-		if !hasRequiredViolation || reproduced == 0 {
-			result.failed("verdict", "COUNTEREXAMPLE_FOUND requires a violated required claim and a reproduced counterexample")
+		if !hasRequiredViolation {
+			result.failed("verdict", "COUNTEREXAMPLE_FOUND requires a violated required claim")
+			return
+		}
+		// Deterministic compile/test/security failures are valid contradictions
+		// without an input to replay. Differential/fix claims must carry a
+		// reproduced counterexample because that is their evidence model.
+		if counterexampleRequired && !reproducedForViolatedClaim {
+			result.failed("verdict", "COUNTEREXAMPLE_FOUND for a differential/fix claim requires a reproduced counterexample bound to the violated claim")
+			return
+		}
+	case domain.VerdictInconclusive:
+		if hasRequiredViolation || hasInvalid {
+			result.failed("verdict", "INCONCLUSIVE contradicts a violated or invalid required claim")
 			return
 		}
 	}

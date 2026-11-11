@@ -8,7 +8,13 @@ import (
 	"github.com/patchproof/patchproof/internal/domain"
 )
 
-const StatementSchemaV1 = "patchproof.statement/v1"
+const (
+	// StatementSchemaV1 is retained for reference; signed reports emitted by
+	// this version use v2, which binds the entire report body (findings,
+	// limitations, checks, metrics and provenance) rather than a subset.
+	StatementSchemaV1 = "patchproof.statement/v1"
+	StatementSchemaV2 = "patchproof.statement/v2"
+)
 
 type Statement struct {
 	SchemaVersion  string    `json:"schema_version"`
@@ -24,6 +30,7 @@ type Statement struct {
 	ManifestDigest string    `json:"manifest_digest"`
 	MerkleRoot     string    `json:"merkle_root"`
 	ClaimsDigest   string    `json:"claims_digest"`
+	ReportDigest   string    `json:"report_digest"`
 	GeneratedAt    time.Time `json:"generated_at"`
 }
 
@@ -32,8 +39,12 @@ func StatementFromReport(report domain.Report) (Statement, error) {
 	if err != nil {
 		return Statement{}, fmt.Errorf("claims digest: %w", err)
 	}
+	reportDigest, err := digestReportBody(report)
+	if err != nil {
+		return Statement{}, fmt.Errorf("report digest: %w", err)
+	}
 	return Statement{
-		SchemaVersion:  StatementSchemaV1,
+		SchemaVersion:  StatementSchemaV2,
 		ReportID:       report.ReportID.String(),
 		RunID:          report.RunID.String(),
 		TenantID:       report.TenantID.String(),
@@ -46,8 +57,28 @@ func StatementFromReport(report domain.Report) (Statement, error) {
 		ManifestDigest: report.Manifest.Digest,
 		MerkleRoot:     report.MerkleRoot,
 		ClaimsDigest:   claimsDigest,
+		ReportDigest:   reportDigest,
 		GeneratedAt:    report.GeneratedAt.UTC(),
 	}, nil
+}
+
+// digestReportBody canonicalizes every report field except the signature
+// envelope and attestation status. Attestation is normalized because
+// SignReport flips it from PENDING_ATTESTATION to SIGNED after the statement
+// has been produced. This binds findings, limitations, checks, metrics and
+// provenance that were previously mutable under a valid signature.
+func digestReportBody(report domain.Report) (string, error) {
+	copy := report
+	copy.Signatures = nil
+	copy.Attestation = domain.AttestationPending
+	copy.GeneratedAt = copy.GeneratedAt.UTC()
+	if len(copy.Counterexamples) > 0 {
+		copy.Counterexamples = append([]domain.Counterexample(nil), copy.Counterexamples...)
+		for i := range copy.Counterexamples {
+			copy.Counterexamples[i].CreatedAt = copy.Counterexamples[i].CreatedAt.UTC()
+		}
+	}
+	return CanonicalDigest(copy)
 }
 
 func (s Statement) Bytes() ([]byte, error) {

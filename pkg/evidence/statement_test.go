@@ -67,7 +67,7 @@ func TestStatementFromReportDigestStability(t *testing.T) {
 	if firstStatement.GeneratedAt.Location() != time.UTC {
 		t.Fatalf("statement generated at location = %s, want UTC", firstStatement.GeneratedAt.Location())
 	}
-	if firstStatement.SchemaVersion != StatementSchemaV1 {
+	if firstStatement.SchemaVersion != StatementSchemaV2 {
 		t.Fatalf("schema version = %q", firstStatement.SchemaVersion)
 	}
 	if firstStatement.ReportID != evReportID.String() || firstStatement.RunID != evRunID.String() {
@@ -213,5 +213,37 @@ func TestSignReportFillsMissingSignatureMetadata(t *testing.T) {
 	}
 	if signature.SignedAt.IsZero() {
 		t.Fatal("signed at was not filled")
+	}
+}
+
+func TestStatementDigestBindsFindingsAndLimitations(t *testing.T) {
+	first := statementReport()
+	second := statementReport()
+	second.Findings = append(second.Findings, domain.Finding{
+		Code: "TEST_FINDING", Severity: domain.SeverityHigh, Summary: "must be signed",
+	})
+	second.Limitations = append(second.Limitations, "new limitation")
+
+	firstStatement, err := StatementFromReport(first)
+	if err != nil {
+		t.Fatalf("first statement: %v", err)
+	}
+	secondStatement, err := StatementFromReport(second)
+	if err != nil {
+		t.Fatalf("second statement: %v", err)
+	}
+	firstDigest, err := firstStatement.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := secondStatement.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("findings/limitations are not bound by the signed statement")
+	}
+	if firstStatement.ReportDigest == "" || secondStatement.ReportDigest == "" {
+		t.Fatal("report digest is empty")
 	}
 }
