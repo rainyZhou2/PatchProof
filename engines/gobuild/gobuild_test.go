@@ -190,6 +190,131 @@ func TestRegressionPass(t *testing.T) {
 	}
 }
 
+func TestRegressionWithoutExecutedTestsIsUnknown(t *testing.T) {
+	root := moduleWith(t, map[string]string{
+		"fixture.go": "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+	})
+	request, _ := testRequest(t, domain.StepKindRegression, map[string]engine.StagedInput{"head": stagedDir(root)}, nil, time.Time{})
+	result, err := New().Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Outcome != domain.OutcomeSucceeded {
+		t.Fatalf("outcome = %s message = %s", result.Outcome, result.Message)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Result != domain.ClaimUnknown {
+		t.Fatalf("evidence = %+v, want one UNKNOWN evidence", result.Evidence)
+	}
+	if !strings.Contains(result.Message, "no tests were executed") {
+		t.Fatalf("message = %q", result.Message)
+	}
+}
+
+func TestRegressionAllSkippedIsUnknown(t *testing.T) {
+	root := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestSkipped(t *testing.T) {\n\tt.Skip(\"not today\")\n}\n",
+	})
+	request, _ := testRequest(t, domain.StepKindRegression, map[string]engine.StagedInput{"head": stagedDir(root)}, nil, time.Time{})
+	result, err := New().Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Outcome != domain.OutcomeSucceeded {
+		t.Fatalf("outcome = %s message = %s", result.Outcome, result.Message)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Result != domain.ClaimUnknown {
+		t.Fatalf("evidence = %+v, want one UNKNOWN evidence", result.Evidence)
+	}
+}
+
+func stagedBase(path string) engine.StagedInput {
+	return engine.StagedInput{
+		Name: "base",
+		Path: path,
+		Ref:  domain.NewCASRef(strings.Repeat("b", 64), 1024),
+		Kind: "tar.gz",
+	}
+}
+
+func TestRegressionBaseFailureIsNotAttributedToPatch(t *testing.T) {
+	baseRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestBoom(t *testing.T) {\n\tt.Fatal(\"pre-existing\")\n}\n",
+	})
+	headRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"unexpected\")\n\t}\n}\n",
+	})
+	request, _ := testRequest(t, domain.StepKindRegression, map[string]engine.StagedInput{
+		"base": stagedBase(baseRoot), "head": stagedDir(headRoot),
+	}, nil, time.Time{})
+	result, err := New().Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Outcome != domain.OutcomeSucceeded {
+		t.Fatalf("outcome = %s message = %s", result.Outcome, result.Message)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Result != domain.ClaimUnknown {
+		t.Fatalf("evidence = %+v, want UNKNOWN", result.Evidence)
+	}
+	if got := result.Evidence[0].Scope.Details["baseline"]; got != "failed" {
+		t.Fatalf("baseline = %q, want failed", got)
+	}
+}
+
+func TestRegressionRemovedTestIsUnknown(t *testing.T) {
+	baseRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"unexpected\")\n\t}\n}\n\nfunc TestExtra(t *testing.T) {}\n",
+	})
+	headRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"unexpected\")\n\t}\n}\n",
+	})
+	request, _ := testRequest(t, domain.StepKindRegression, map[string]engine.StagedInput{
+		"base": stagedBase(baseRoot), "head": stagedDir(headRoot),
+	}, nil, time.Time{})
+	result, err := New().Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Outcome != domain.OutcomeSucceeded {
+		t.Fatalf("outcome = %s message = %s", result.Outcome, result.Message)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Result != domain.ClaimUnknown {
+		t.Fatalf("evidence = %+v, want UNKNOWN", result.Evidence)
+	}
+	if got := result.Evidence[0].Scope.Details["removed_tests"]; got != "1" {
+		t.Fatalf("removed_tests = %q, want 1", got)
+	}
+}
+
+func TestRegressionBasePassHeadFailureIsViolation(t *testing.T) {
+	baseRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"unexpected\")\n\t}\n}\n",
+	})
+	headRoot := moduleWith(t, map[string]string{
+		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",
+		"fixture_test.go": "package buildtest\n\nimport \"testing\"\n\nfunc TestBoom(t *testing.T) {\n\tt.Fatal(\"boom\")\n}\n",
+	})
+	request, _ := testRequest(t, domain.StepKindRegression, map[string]engine.StagedInput{
+		"base": stagedBase(baseRoot), "head": stagedDir(headRoot),
+	}, nil, time.Time{})
+	result, err := New().Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Outcome != domain.OutcomeFailed {
+		t.Fatalf("outcome = %s message = %s", result.Outcome, result.Message)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Result != domain.ClaimViolated {
+		t.Fatalf("evidence = %+v, want VIOLATED", result.Evidence)
+	}
+}
+
 func TestRegressionFailure(t *testing.T) {
 	root := moduleWith(t, map[string]string{
 		"fixture.go":      "package buildtest\n\nfunc Add(a, b int) int { return a + b }\n",

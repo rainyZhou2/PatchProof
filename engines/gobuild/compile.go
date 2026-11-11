@@ -55,7 +55,8 @@ func executeCompile(
 	claimID := view.claimID
 
 	if outcome.startErr != nil {
-		result := failedResult(domain.ErrSandboxUnavailable, fmt.Sprintf("go build could not start: %v", outcome.startErr))
+		class, retryable := startFailureClass(outcome.startErr)
+		result := failedResultRetryable(class, fmt.Sprintf("go build could not start: %v", outcome.startErr), retryable)
 		result.Artifacts = artifacts
 		result.Outputs = map[string]string{"log.digest": logRef.Hex(), "target": string(view.target)}
 		return result
