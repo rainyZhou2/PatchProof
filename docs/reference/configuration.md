@@ -36,17 +36,19 @@ A complete example is
 
 | Section | Key fields |
 |---|---|
-| `service` | `name`, `region`, `version`, `externalUrl` |
-| `api` | `addr`, `readHeaderTimeout`, `idempotencyTTL` |
-| `postgres` | `dsn`, `maxConns`, `minConns`, `migrations` |
-| `nats` | `urls`, `stream`, `subjectPrefix`, `maxAge` |
-| `cas` | `driver`, `fs.root`, `s3.endpoint`, `s3.bucket`, `s3.region` |
-| `auth` | `mode`, `oidc`, `dev`, `attemptTokenTTL` |
-| `signing` | `keyId`, `privateKeyFile`, `require` |
-| `scheduler` | `shardCount`, `leaseTTL`, `clusterStaleAfter`, `placement`, `actionCacheEnabled`, `actionCacheTTL`, `cacheEpoch` |
-| `execution` | `workerImage`, `brokerImage`, `namespace`, `runtimeClass`, `isolation`, `plugins` |
-| `limits` | repository, changed-file, budget and concurrency limits |
-| `telemetry` | `logLevel`, `logFormat`, `otlpEndpoint`, `sampleRatio` |
+| `service` | `name`, `region`, `version`, `cluster` |
+| `http` | `listenAddr`, `externalUrl`, `readHeaderTimeout`, `readTimeout`, `writeTimeout`, `idleTimeout`, `shutdownTimeout`, `maxBodyBytes`, `tlsCertFile`, `tlsKeyFile` |
+| `database` | `driver`, `dsn`, `maxConns`, `minConns`, `maxConnLifetime`, `maxConnIdleTime`, `statementTimeout`, `migrateOnStart` |
+| `events` | `driver`, `urls`, `stream`, `consumerPrefix`, `maxAckPending`, `batchSize`, `ackWait`, `outboxInterval`, `outboxBatch` |
+| `artifacts` | `driver`, `root`, `endpoint`, `region`, `bucket`, `forcePathStyle`, `publicPrefix`, `presignTtl` |
+| `auth` | `mode`, `devToken`, `issuer`, `audience`, `jwksUrl`, `tenantClaim`, `rolesClaim`, `groupsClaim`, `attemptTokenKey`, `attemptTokenTtl`, `internalToken`, `adminSubjects`, `devTenantId`, `devSubject`, `devRoles` |
+| `execution` | `defaultIsolation`, `maxIsolation`, `allowedLanguages`, `runtimeClass`, `workerImage`, `engineImage`, `namespace`, `jobTtl`, `jobBackoffLimit`, `activeDeadline`, `maxConcurrent`, `supportedIsolationTiers`, `nodeSelector`, `tolerations`, `agentEndpoint`, `agentToken`, `clusterId`, `clusterRegion`, `reportBackUrl`, `automountWorkerToken`, `brokerImage`, `brokerServiceAccount`, `brokeredStorageClass`, `workspaceSizeGiB`, `plugins` |
+| `scheduler` | `shardCount`, `leaseTtl`, `renewInterval`, `pollInterval`, `batchSize`, `maxStepsPerTenant`, `maxStepsPerCluster`, `clusterStaleAfter`, `placement`, `priorityBoostMax`, `actionCacheEnabled`, `actionCacheTtl`, `cacheEpoch` |
+| `worker` | `workDir`, `controllerUrl`, `stepSpecFile`, `heartbeat`, `uploadRetries`, `maxOutputBytes`, `offlineOutputDir` |
+| `signing` | `algorithm`, `keyId`, `privateKeyFile`, `publicKeyFile`, `require`, `kmsKeyUri` |
+| `telemetry` | `logLevel`, `logFormat`, `metricsAddr`, `otlpEndpoint`, `otlpInsecure`, `sampleRatio`, `serviceNamespace` |
+| `limits` | repository, changed-file, step-count, wall-clock, CPU, fuzz, concurrency and API limits |
+| `state` | `driver` |
 
 ## Action cache
 

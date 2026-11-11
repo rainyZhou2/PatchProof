@@ -50,8 +50,9 @@ offline report verification, control-plane submission and Kubernetes, see
 
 ## Why PatchProof
 
-- **Counterexamples, not just failures.** A violated claim carries a
-  CAS-addressed input and observations that can be replayed.
+- **Counterexamples, not just failures.** Differential and fuzz violations
+  carry a CAS-addressed input and observations that can be replayed;
+  deterministic compile/test failures carry their logs and exit status.
 - **Evidence you can audit.** Reports have a canonical Merkle manifest and an
   Ed25519 signature; verification does not need the control plane.
 - **Correct under retries.** PostgreSQL is authoritative, dispatch is

@@ -45,10 +45,19 @@ returns `409`.
 
 ## Offline verification
 
+Export the report produced by a local run first:
+
+```sh
+bin/patchproof verify --repo . --base HEAD~1 --head HEAD \
+  --policy patchproof.yaml --format json > report.json
+```
+
+Then verify it without the control plane:
+
 ```sh
 bin/patchproof proof verify --report report.json \
   --cas-root .patchproof/cas \
-  --key local=.patchproof/keys/signing.pub \
+  --key patchproof-local=.patchproof/keys/signing.pub \
   --policy patchproof.yaml
 ```
 

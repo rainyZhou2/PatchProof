@@ -86,9 +86,11 @@ Before enabling untrusted verification:
    matching toleration. This chart does not create node pools or taints.
 3. Create `execution.namespace` and the worker ServiceAccount. The worker image
    digest must be the same value used in `execution.workerImage.digest`.
-4. Enforce a default-deny NetworkPolicy in the execution namespace that allows
-   only the API callback endpoint and the artifact store (or a stage-in/stage-out
-   broker for offline mode).
+4. The chart creates a default-deny NetworkPolicy in the execution namespace and
+   allows DNS, the release-namespace callback service, the configured S3 CIDRs
+   and the OTLP CIDRs. Add `networkPolicy.egress.api.cidrs` when the worker
+   callback is an external URL rather than the in-cluster API Service. The
+   `phase=execute` policy remains a full ingress/egress deny.
 5. Node pool: set `execution.nodeSelector` and `execution.tolerations` so Jobs
    land on the dedicated pool. Example for a tainted gVisor pool:
 
@@ -142,6 +144,10 @@ worker:
       eks.amazonaws.com/role-arn: arn:aws:iam::...:role/patchproof-broker
 ```
 
+The trusted stage-in/stage-out Jobs automount the broker ServiceAccount token so
+that IRSA or equivalent workload identity can reach the object store. The
+execute Job never receives a token, CAS credentials or network egress.
+
 The broker service account needs object-store access and the callback endpoint;
 the worker service account does not. The chart creates a NetworkPolicy selecting
 `patchproof.io/phase=execute` with empty ingress and egress. That policy is what
@@ -169,12 +175,14 @@ bearer token, a cluster id, and permission to manage Jobs, Pods, ConfigMaps,
 Secrets and PVCs in the execution namespace (`clusterAgent.rbac.create=true` creates a
 namespaced Role and RoleBinding).
 
-The agent registers `ExecutorKind=remote` and an endpoint from
-`execution.agentEndpoint` (or `externalUrl` when unset). Set
-`execution.agentEndpoint` to a URL reachable from the controller; the
-controller's remote executor dials that endpoint with the agent token. The
-agent advertises the tiers in `execution.supportedIsolationTiers`; untrusted
-tiers require `execution.runtimeClass`.
+The agent registers `ExecutorKind=remote`. When `execution.agentEndpoint` is
+empty the chart defaults it to the in-cluster Service
+`http://<release>-cluster-agent.<release-namespace>.svc:<port>`. For an agent in
+another cluster or behind an ingress, set `execution.agentEndpoint` to a URL
+reachable from the controller. The controller's remote executor dials that
+endpoint with the agent token. The agent advertises the tiers in
+`execution.supportedIsolationTiers`; untrusted tiers require
+`execution.runtimeClass`.
 
 ## Development auth
 

@@ -11,6 +11,7 @@
 | Worker protocol | `api/proto/patchproof/worker/v1` | Contract mirrors the HTTP attempt API; generated bindings are not checked in. |
 | Evidence | `patchproof.evidence/v1` (`internal/domain/evidence.go`) | A new schema version gets a new verifier path; old evidence is not reinterpreted. |
 | Report | `patchproof.report/v1` | Same rule as evidence. The offline verifier checks the identifier. |
+| Signature statement | `patchproof.statement/v2` | v2 binds the whole report body (findings, limitations, checks, metrics, provenance). Signatures produced by v1 statements are not accepted by the v2 verifier. |
 | Policy | `patchproof.io/v1` (`internal/domain/policy_spec.go`) | Unknown fields are rejected (`KnownFields(true)`); additive fields require a parser change. |
 | PostgreSQL schema | `migrations/postgres` | Filename-ordered, versioned in `schema_migrations`, expand/contract. |
 

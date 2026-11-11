@@ -111,7 +111,8 @@ store is inside T0. Policy changes must be audited and reviewed.
   is excluded and forces an `INCONCLUSIVE` verdict rather than a pass.
 - The report references a CAS manifest and a Merkle root over its leaves; the
   offline verifier checks structure, digests, sizes, signature and trust root.
-- Reports are immutable once stored; there is no in-place edit path.
+- The latest report for a run may be replaced when aggregation is retried;
+  signed report bundles are content-addressed and cannot be edited in place.
 - Signature status controls whether the report is presented as `SIGNED`.
 
 Residual risk: a compromised control plane or signing key can produce a
@@ -146,16 +147,19 @@ bandwidth and disk. Budgets are policy-controlled, not attacker-controlled.
 
 ### Cache poisoning
 
-There is no action-cache adapter in this tree. `patchproof_cache_hit_total` is
-registered but no cache layer records hits. If a cache is added, it must:
+The action cache is implemented in `internal/actioncache` and backed by the
+metadata store. It keys on tenant, cache epoch, step kind, engine and version,
+snapshots, policy, input manifest, architecture, isolation, network, runtime
+class, worker image and step options; only positive analyze/impact/compile
+results are stored. Cross-tenant reads are prevented by the store key and the
+tenant-scoped CAS namespace.
 
-- key on the full action description, including snapshot, toolchain image,
-  engine version, command, environment, declared inputs, policy digest,
-  architecture, sandbox profile, dependency locks and trust domain,
-- verify blob existence and digests on every hit,
-- never share private source-derived artifacts across tenants or trust domains,
-- treat fuzz "no counterexample found" as cacheable only for corpus/build
-  products, not as a complete random search result.
+Known gap: a hit is cloned and committed without re-checking that every
+referenced artifact still exists. Treat a missing artifact on a cache hit as an
+integrity failure; the offline deep verifier checks evidence artifacts and
+counterexample inputs, but the scheduler does not. Future work should `Stat`
+every referenced artifact before committing a hit, and should include plugin
+environment/engine image in the key.
 
 ### Symlink and path handling
 

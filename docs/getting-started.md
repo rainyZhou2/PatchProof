@@ -52,15 +52,20 @@ git add . && git commit -qm change
 
 `patchproof init` writes a policy template. Review `contracts`,
 `execution.isolationTier` and `protectedPaths` before using it in a real project.
-Local verification writes its CAS, generated signing key and reports under
-`.patchproof/`, which is ignored by git.
+Local verification writes its CAS and generated signing key under
+`.patchproof/`, which is ignored by git. Reports are printed to stdout; redirect
+them with `--format json > report.json` when you need an offline bundle.
 
 ## 3. Verify the report offline
 
 ```sh
+# Export the report produced by the local run (its JSON goes to stdout).
+bin/patchproof verify --repo . --base HEAD~1 --head HEAD \
+  --policy patchproof.yaml --format json > report.json
+
 bin/patchproof proof verify --report report.json \
   --cas-root .patchproof/cas \
-  --key local=.patchproof/keys/signing.pub \
+  --key patchproof-local=.patchproof/keys/signing.pub \
   --policy patchproof.yaml
 ```
 
