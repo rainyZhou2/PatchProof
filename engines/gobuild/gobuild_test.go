@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,25 @@ func TestRegressionTimeout(t *testing.T) {
 	}
 	if len(result.Artifacts) == 0 {
 		t.Errorf("timeout should keep diagnostic artifacts")
+	}
+}
+
+func TestRunGoCommandKillsChildProcesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are not available on windows")
+	}
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "orphan-ran")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	outcome := runGoCommand(ctx, "/bin/sh", directory, nil,
+		[]string{"-c", `(sleep 2 && : > "$1") & sleep 30`, "sh", marker})
+	if !outcome.timedOut {
+		t.Fatalf("outcome = %+v, want timeout", outcome)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("background child survived cancellation and wrote %s", marker)
 	}
 }
 

@@ -75,6 +75,10 @@ type commandOutcome struct {
 	startErr        error
 }
 
+// processDrainTimeout bounds how long a cancelled toolchain command waits for
+// its process group to disappear before the result is returned.
+const processDrainTimeout = 2 * time.Second
+
 // runGoCommand executes the go binary directly with bounded output capture.
 func runGoCommand(ctx context.Context, goBinary, directory string, environment, args []string) commandOutcome {
 	stdout := newCappedBuffer(maxLogBytes)
@@ -87,7 +91,17 @@ func runGoCommand(ctx context.Context, goBinary, directory string, environment, 
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.WaitDelay = 5 * time.Second
+	// The go command spawns compiler, linker and test processes. Killing only
+	// the direct child leaves them running inside the step workspace, racing
+	// with artifact collection and workspace cleanup, so cancel the whole tree.
+	configureProcessGroup(command)
+	command.Cancel = func() error { return killProcessTree(command.Process) }
 	err := command.Run()
+	if ctx.Err() != nil {
+		// Wait for compiler and linker children to finish dying so they cannot
+		// write into the step workspace after the engine returns.
+		waitProcessGroup(command.Process, processDrainTimeout)
+	}
 	outcome.stdout = stdout.String()
 	outcome.stderr = stderr.String()
 	outcome.stdoutTruncated = stdout.Truncated()
