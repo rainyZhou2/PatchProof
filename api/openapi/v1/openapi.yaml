@@ -346,10 +346,11 @@ paths:
       operationId: createReproduction
       summary: Replay a reproduced counterexample
       description: |
-        Submits a new differential-fuzz run for a counterexample that belongs to
-        the original run and has `reproduced: true`. A known counterexample case
-        maps to a deterministic idempotency key, so repeated calls return the
-        same reproduction run.
+        Submits a replay run that executes the stored counterexample input
+        against the base and head snapshots for the matching contract. The
+        counterexample must belong to the original run and have
+        `reproduced: true`. A known case maps to a deterministic idempotency
+        key, so repeated calls return the same active reproduction run.
       x-required-roles: [operator, admin]
       requestBody:
         required: true

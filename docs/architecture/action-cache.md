@@ -9,7 +9,7 @@ and every reuse is re-fenced as a new attempt in the new run.
 `internal/actioncache` hashes a canonical document containing:
 
 - tenant id and cache epoch (`scheduler.cacheEpoch`, default service version),
-- step kind, engine name, input manifest digest,
+- step kind, engine name, engine version, input manifest digest,
 - snapshot digest, base and head archive references,
 - policy digest,
 - architecture, isolation tier, subject network, runtime class,
@@ -42,8 +42,8 @@ steps always execute. A result is stored only when:
 
 ## Invalidation
 
-- Bump `scheduler.cacheEpoch` when an engine, compiler or worker image changes
-  in a way that changes outputs.
+- Engine version, worker image and step options invalidate naturally via the key.
+- Bump `scheduler.cacheEpoch` for changes not captured by those fields.
 - Disable with `scheduler.actionCacheEnabled=false`.
 - TTL is `scheduler.actionCacheTtl` (default 168h).
 - Changing inputs, policy, architecture or isolation invalidates naturally via

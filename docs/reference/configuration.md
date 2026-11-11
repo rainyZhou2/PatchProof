@@ -43,7 +43,7 @@ A complete example is
 | `cas` | `driver`, `fs.root`, `s3.endpoint`, `s3.bucket`, `s3.region` |
 | `auth` | `mode`, `oidc`, `dev`, `attemptTokenTTL` |
 | `signing` | `keyId`, `privateKeyFile`, `require` |
-| `scheduler` | `shardCount`, `leaseTTL`, `placement`, `actionCacheEnabled`, `actionCacheTTL`, `cacheEpoch` |
+| `scheduler` | `shardCount`, `leaseTTL`, `clusterStaleAfter`, `placement`, `actionCacheEnabled`, `actionCacheTTL`, `cacheEpoch` |
 | `execution` | `workerImage`, `brokerImage`, `namespace`, `runtimeClass`, `isolation`, `plugins` |
 | `limits` | repository, changed-file, budget and concurrency limits |
 | `telemetry` | `logLevel`, `logFormat`, `otlpEndpoint`, `sampleRatio` |
@@ -51,9 +51,12 @@ A complete example is
 ## Action cache
 
 `scheduler.actionCacheEnabled` defaults to `true`; `actionCacheTTL` defaults to
-`168h`; `cacheEpoch` defaults to the service version. Change the epoch whenever an
-engine, compiler or worker image changes in a way that affects output. See
-[architecture/action-cache.md](../architecture/action-cache.md).
+`168h`; `cacheEpoch` defaults to the service version. Cache keys include the
+engine version, the worker image and a toolchain-independent step description,
+so an engine upgrade invalidates old entries automatically. Use `cacheEpoch` for
+changes that are not captured by those fields. `scheduler.clusterStaleAfter`
+defaults to `90s`; clusters that have not heartbeated within that window are not
+scheduled. See [architecture/action-cache.md](../architecture/action-cache.md).
 
 ## External plugins
 
@@ -64,6 +67,7 @@ execution:
   allowedLanguages: [go, python]
   plugins:
     - name: python-analyzer
+      version: 1.0.0
       command: ["/opt/patchproof/plugins/python-analyzer"]
       env:
         PYTHONDONTWRITEBYTECODE: "1"

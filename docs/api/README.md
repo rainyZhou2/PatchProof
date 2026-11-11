@@ -37,8 +37,9 @@ derived from the authenticated token, never from a path or body field.
 - Tenant scope is taken from the token tenant claim; it is never accepted from
   the request body or path.
 - `POST /api/v1/runs` requires an `Idempotency-Key` header. Replaying the same
-  key with identical frozen inputs returns the existing run; different inputs
-  return `409`.
+  key with identical frozen inputs returns the existing active run; different
+  inputs return `409`. Once the keyed run is terminal, the same key may be
+  reused to start a new run.
 - Errors use `application/problem+json` with `type`, `title`, `status`,
   `detail`, `code`, `request_id` and `instance`.
 - List endpoints use an opaque `cursor` and a bounded `limit`.
