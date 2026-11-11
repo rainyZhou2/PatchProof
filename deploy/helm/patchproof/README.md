@@ -175,6 +175,11 @@ bearer token, a cluster id, and permission to manage Jobs, Pods, ConfigMaps,
 Secrets and PVCs in the execution namespace (`clusterAgent.rbac.create=true` creates a
 namespaced Role and RoleBinding).
 
+When `clusterAgent.rbac.create` and `clusterAgent.rbac.nodes` are enabled the
+agent reads Node allocatable CPU/memory and reports that capacity, plus active
+and pending attempt Job counts, on each heartbeat. Set `rbac.nodes=false` where
+cluster-scoped reads are forbidden; capacity is then reported as unknown.
+
 The agent registers `ExecutorKind=remote`. When `execution.agentEndpoint` is
 empty the chart defaults it to the in-cluster Service
 `http://<release>-cluster-agent.<release-namespace>.svc:<port>`. For an agent in
@@ -183,6 +188,17 @@ reachable from the controller. The controller's remote executor dials that
 endpoint with the agent token. The agent advertises the tiers in
 `execution.supportedIsolationTiers`; untrusted tiers require
 `execution.runtimeClass`.
+
+## Scheduler sharding and outbox
+
+`scheduler.shardLeaseLimit` caps how many shard leases one controller claims in
+a refresh. `0` derives `ceil(shardCount/controller.replicas)`; set it
+explicitly when replicas are managed outside the chart. This prevents the first
+controller from winning every shard.
+
+Events that fail delivery `nats.outboxMaxAttempts` times are marked
+`dead_lettered_at` and stop retrying. Inspect and replay them deliberately after
+the bus recovers; delivered and dead-lettered rows remain in PostgreSQL.
 
 ## Development auth
 

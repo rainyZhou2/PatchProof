@@ -132,12 +132,16 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [tests/README.md](tests/README.m
 ## Known limitations
 
 - No SMT/formal proof engine and no Python/C++ engines are bundled.
+- The bundled `go-security` scanner is a deterministic heuristic (TLS verify,
+  shell construction, world-writable files, plaintext HTTP, committed private
+  keys), not a full SAST or dependency CVE scanner.
 - No exactly-once execution and no multi-region active-active; fencing and
   manual region procedures are the model.
 - No OCI plugin auto-loader or generated gRPC client; plugins must be present in
   the worker image.
 - Brokered mode requires a broker image, broker workload identity, a
-  ReadWriteOnce volume and an enforced egress-deny policy.
+  ReadWriteOnce volume and an enforced egress-deny policy. The Helm chart
+  creates the execution-namespace default-deny and phase-specific allows.
 - Live staging-cluster acceptance was not executed in this checkout. See the
   [staging runbook](docs/operations/runbooks/staging-verification.md).
 

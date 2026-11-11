@@ -13,7 +13,8 @@ and every reuse is re-fenced as a new attempt in the new run.
 - snapshot digest, base and head archive references,
 - policy digest,
 - architecture, isolation tier, subject network, runtime class,
-- worker image reference,
+- worker image, engine image and the configured plugin environment digest,
+- the resolved base/head/snapshot input digest,
 - all step options in sorted order.
 
 Changing any of these produces a different key. Cross-tenant reads are
@@ -32,13 +33,16 @@ steps always execute. A result is stored only when:
 ## Read and write path
 
 1. The scheduler computes the key before placing a READY step.
-2. A hit acquires a new lease (incrementing the generation), clones the cached
-   result with fresh evidence ids, run/step ids and timestamps, and commits it
-   through `CommitAttempt`. Downstream steps are promoted by the store.
-3. A miss dispatches the step normally. After a successful commit the scheduler
+2. A hit verifies that every artifact and input referenced by the cached result
+   still exists in CAS. A missing or unreadable blob discards the hit and the
+   step executes normally.
+3. A valid hit acquires a new lease (incrementing the generation), clones the
+   cached result with fresh evidence ids, run/step ids and timestamps, and
+   commits it through `CommitAttempt`. Downstream steps are promoted by the store.
+4. A miss dispatches the step normally. After a successful commit the scheduler
    writes the entry. Workers that commit through the callback API write the entry
    in `attempts.Service` so Kubernetes executions are cached too.
-4. Expired entries are purged hourly and ignored on read.
+5. Expired entries are purged hourly and ignored on read.
 
 ## Invalidation
 

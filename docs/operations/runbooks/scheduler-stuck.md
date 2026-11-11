@@ -11,7 +11,10 @@ runs that plan successfully but never dispatch work.
   `patchproof_inflight_steps` is zero.
 - Controller logs repeat `initial shard ownership failed`, `lease batch failed`,
   `no eligible cluster`, or `shard lease` errors.
-- One controller replica owns all shards, or no replica owns them.
+- One controller replica owns all shards, or no replica owns them. With
+  `scheduler.shardLeaseLimit` set (Helm derives it from
+  `ceil(shardCount/controller.replicas)`), each replica claims at most that
+  many shards, so several replicas divide the shard space.
 
 ## Signals and dashboards
 

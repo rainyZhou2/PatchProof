@@ -8,6 +8,9 @@ is not the authority for business state; PostgreSQL and its outbox are.
 - `GET /readyz` returns `503` because readiness probes the event bus.
 - Runs are accepted but remain in an early state longer than expected.
 - Controller logs repeat `outbox drain failed` or `ensure stream`.
+- After `nats.outboxMaxAttempts` failures an event is marked
+  `dead_lettered_at` and stops being retried; inspect `outbox_events` and
+  replay it deliberately after NATS recovers.
 - `patchproof_outbox_failures_total` rises while
   `patchproof_outbox_published_total` is flat.
 - The NATS monitoring endpoint or consumer lag shows disconnected clients or a

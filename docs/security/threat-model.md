@@ -111,8 +111,9 @@ store is inside T0. Policy changes must be audited and reviewed.
   is excluded and forces an `INCONCLUSIVE` verdict rather than a pass.
 - The report references a CAS manifest and a Merkle root over its leaves; the
   offline verifier checks structure, digests, sizes, signature and trust root.
-- The latest report for a run may be replaced when aggregation is retried;
-  signed report bundles are content-addressed and cannot be edited in place.
+- Reports are immutable versions keyed by `(run_id, report_id)`; retrying
+  aggregation inserts a new version instead of replacing the prior signed
+  report. `GetReport` returns the latest version.
 - Signature status controls whether the report is presented as `SIGNED`.
 
 Residual risk: a compromised control plane or signing key can produce a
@@ -154,12 +155,10 @@ class, worker image and step options; only positive analyze/impact/compile
 results are stored. Cross-tenant reads are prevented by the store key and the
 tenant-scoped CAS namespace.
 
-Known gap: a hit is cloned and committed without re-checking that every
-referenced artifact still exists. Treat a missing artifact on a cache hit as an
-integrity failure; the offline deep verifier checks evidence artifacts and
-counterexample inputs, but the scheduler does not. Future work should `Stat`
-every referenced artifact before committing a hit, and should include plugin
-environment/engine image in the key.
+A hit is cloned only after every referenced result artifact and evidence input
+has been `Stat`ed in the tenant's run CAS scope. A missing blob discards the hit.
+The key includes the engine image, configured plugin environment digest and the
+resolved snapshot input digest in addition to the action fields.
 
 ### Symlink and path handling
 

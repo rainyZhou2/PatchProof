@@ -39,11 +39,11 @@ A complete example is
 | `service` | `name`, `region`, `version`, `cluster` |
 | `http` | `listenAddr`, `externalUrl`, `readHeaderTimeout`, `readTimeout`, `writeTimeout`, `idleTimeout`, `shutdownTimeout`, `maxBodyBytes`, `tlsCertFile`, `tlsKeyFile` |
 | `database` | `driver`, `dsn`, `maxConns`, `minConns`, `maxConnLifetime`, `maxConnIdleTime`, `statementTimeout`, `migrateOnStart` |
-| `events` | `driver`, `urls`, `stream`, `consumerPrefix`, `maxAckPending`, `batchSize`, `ackWait`, `outboxInterval`, `outboxBatch` |
+| `events` | `driver`, `urls`, `stream`, `consumerPrefix`, `maxAckPending`, `batchSize`, `ackWait`, `outboxInterval`, `outboxBatch`, `outboxMaxAttempts` |
 | `artifacts` | `driver`, `root`, `endpoint`, `region`, `bucket`, `forcePathStyle`, `publicPrefix`, `presignTtl` |
 | `auth` | `mode`, `devToken`, `issuer`, `audience`, `jwksUrl`, `tenantClaim`, `rolesClaim`, `groupsClaim`, `attemptTokenKey`, `attemptTokenTtl`, `internalToken`, `adminSubjects`, `devTenantId`, `devSubject`, `devRoles` |
 | `execution` | `defaultIsolation`, `maxIsolation`, `allowedLanguages`, `runtimeClass`, `workerImage`, `engineImage`, `namespace`, `jobTtl`, `jobBackoffLimit`, `activeDeadline`, `maxConcurrent`, `supportedIsolationTiers`, `nodeSelector`, `tolerations`, `agentEndpoint`, `agentToken`, `clusterId`, `clusterRegion`, `reportBackUrl`, `automountWorkerToken`, `brokerImage`, `brokerServiceAccount`, `brokeredStorageClass`, `workspaceSizeGiB`, `plugins` |
-| `scheduler` | `shardCount`, `leaseTtl`, `renewInterval`, `pollInterval`, `batchSize`, `maxStepsPerTenant`, `maxStepsPerCluster`, `clusterStaleAfter`, `placement`, `priorityBoostMax`, `actionCacheEnabled`, `actionCacheTtl`, `cacheEpoch` |
+| `scheduler` | `shardCount`, `shardLeaseLimit`, `leaseTtl`, `renewInterval`, `pollInterval`, `batchSize`, `maxStepsPerTenant`, `maxStepsPerCluster`, `clusterStaleAfter`, `placement`, `priorityBoostMax`, `actionCacheEnabled`, `actionCacheTtl`, `cacheEpoch` |
 | `worker` | `workDir`, `controllerUrl`, `stepSpecFile`, `heartbeat`, `uploadRetries`, `maxOutputBytes`, `offlineOutputDir` |
 | `signing` | `algorithm`, `keyId`, `privateKeyFile`, `publicKeyFile`, `require`, `kmsKeyUri` |
 | `telemetry` | `logLevel`, `logFormat`, `metricsAddr`, `otlpEndpoint`, `otlpInsecure`, `sampleRatio`, `serviceNamespace` |
