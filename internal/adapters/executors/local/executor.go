@@ -30,7 +30,7 @@ const (
 
 var (
 	supportedLanguages = []string{"go"}
-	supportedEngines   = []string{"go-analyzer", "go-differential", "go-fuzz", "z3-bounded", "semgrep"}
+	supportedEngines   = []string{"go-analyzer", "go-build", "go-differential", "go-native-fuzz", "go-security"}
 	supportedFeatures  = []string{featureInProcess}
 )
 

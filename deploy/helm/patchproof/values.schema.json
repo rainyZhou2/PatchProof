@@ -525,7 +525,8 @@
         "consumerPrefix",
         "maxAckPending",
         "ackWait",
-        "outboxInterval"
+        "outboxInterval",
+        "outboxMaxAttempts"
       ],
       "properties": {
         "urls": {
@@ -550,6 +551,10 @@
         },
         "outboxInterval": {
           "type": "string"
+        },
+        "outboxMaxAttempts": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },
@@ -986,7 +991,8 @@
         "priorityBoostMax",
         "actionCacheEnabled",
         "actionCacheTtl",
-        "cacheEpoch"
+        "cacheEpoch",
+        "shardLeaseLimit"
       ],
       "properties": {
         "shardCount": {
@@ -1031,6 +1037,10 @@
         },
         "cacheEpoch": {
           "type": "string"
+        },
+        "shardLeaseLimit": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -1331,10 +1341,14 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "create"
+            "create",
+            "nodes"
           ],
           "properties": {
             "create": {
+              "type": "boolean"
+            },
+            "nodes": {
               "type": "boolean"
             }
           }

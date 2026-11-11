@@ -538,6 +538,12 @@ func TestNeedsPartial(t *testing.T) {
 		t.Fatal("uncompleted requested check was not marked partial")
 	}
 
+	allowed := missingCheck
+	allowed.AllowInconclusiveOn = []string{"security-scan"}
+	if needsPartial(allowed, false) {
+		t.Fatal("requested check allowed to be inconclusive was marked partial")
+	}
+
 	policyCheck := base
 	policyCheck.RequestedChecks = []string{"compile", "protected-assets"}
 	if needsPartial(policyCheck, false) {

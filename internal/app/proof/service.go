@@ -167,33 +167,36 @@ func (s *Service) buildReport(ctx context.Context, run domain.Run, dag domain.DA
 		}
 	}
 	requested := append([]string{}, run.RequestedChecks...)
+	allowInconclusive := []string{}
 	if policy != nil {
 		requested = unionStrings(requested, policy.RequiredChecks())
+		allowInconclusive = append(allowInconclusive, policy.Spec.Verification.AllowInconclusiveOn...)
 	}
 	report := domain.Report{
-		SchemaVersion:   domain.ReportSchemaV1,
-		ReportID:        domain.NewReportID(),
-		RunID:           run.ID,
-		TenantID:        run.TenantID,
-		ProjectID:       run.ProjectID,
-		Verdict:         verdict.Verdict,
-		BaseCommit:      run.BaseCommit,
-		HeadCommit:      run.HeadCommit,
-		SnapshotDigest:  run.SnapshotDigest,
-		BaseSnapshot:    run.BaseSnapshot,
-		HeadSnapshot:    run.HeadSnapshot,
-		PolicyDigest:    run.PolicyDigest,
-		RequestedChecks: requested,
-		CompletedChecks: completed,
-		Claims:          verdict.Claims,
-		Counterexamples: counterexamples,
-		Findings:        verdict.Findings,
-		Assumptions:     collectAssumptions(dag.Claims),
-		Limitations:     s.collectLimitations(dag, counterexamples, verdict, policy),
-		Metrics:         reportMetrics(run, dag, now),
-		Provenance:      s.provenance(run, evidenceList, policy),
-		Attestation:     domain.AttestationPending,
-		GeneratedAt:     now,
+		SchemaVersion:       domain.ReportSchemaV1,
+		ReportID:            domain.NewReportID(),
+		RunID:               run.ID,
+		TenantID:            run.TenantID,
+		ProjectID:           run.ProjectID,
+		Verdict:             verdict.Verdict,
+		BaseCommit:          run.BaseCommit,
+		HeadCommit:          run.HeadCommit,
+		SnapshotDigest:      run.SnapshotDigest,
+		BaseSnapshot:        run.BaseSnapshot,
+		HeadSnapshot:        run.HeadSnapshot,
+		PolicyDigest:        run.PolicyDigest,
+		RequestedChecks:     requested,
+		CompletedChecks:     completed,
+		AllowInconclusiveOn: allowInconclusive,
+		Claims:              verdict.Claims,
+		Counterexamples:     counterexamples,
+		Findings:            verdict.Findings,
+		Assumptions:         collectAssumptions(dag.Claims),
+		Limitations:         s.collectLimitations(dag, counterexamples, verdict, policy),
+		Metrics:             reportMetrics(run, dag, now),
+		Provenance:          s.provenance(run, evidenceList, policy),
+		Attestation:         domain.AttestationPending,
+		GeneratedAt:         now,
 	}
 	if s.cas != nil {
 		manifestRef, root, err := s.persistBundle(ctx, run, report.Claims, evidenceList, counterexamples)

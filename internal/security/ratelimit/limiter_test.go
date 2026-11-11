@@ -160,3 +160,19 @@ func TestConcurrentAllowNeverExceedsBurst(t *testing.T) {
 		t.Fatalf("allowed %d concurrent requests, want exactly %d", got, burst)
 	}
 }
+
+func TestLimiterUsesPerTenantResolver(t *testing.T) {
+	limiter := New(100, 100)
+	limiter.SetResolver(func(domain.TenantID) (int, int) { return 1, 1 })
+	tenant := domain.NewTenantID()
+	if !limiter.Allow(tenant) {
+		t.Fatal("first request should be allowed")
+	}
+	if limiter.Allow(tenant) {
+		t.Fatal("second request should be limited by the tenant resolver")
+	}
+	other := domain.NewTenantID()
+	if !limiter.Allow(other) {
+		t.Fatal("another tenant should have an independent bucket")
+	}
+}

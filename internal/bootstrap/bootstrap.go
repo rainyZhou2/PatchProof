@@ -19,6 +19,7 @@ import (
 	"github.com/patchproof/patchproof/engines/gobuild"
 	"github.com/patchproof/patchproof/engines/godifferential"
 	"github.com/patchproof/patchproof/engines/gofuzz"
+	"github.com/patchproof/patchproof/engines/gosecurity"
 	casfs "github.com/patchproof/patchproof/internal/adapters/cas/fs"
 	casmemory "github.com/patchproof/patchproof/internal/adapters/cas/memory"
 	cass3 "github.com/patchproof/patchproof/internal/adapters/cas/s3"
@@ -99,9 +100,9 @@ func OpenBus(ctx context.Context, cfg config.Config) (ports.EventBus, error) {
 }
 
 func NewEngines(cfg config.Config) (*engine.Registry, error) {
-	registry := engine.NewRegistry(goanalyzer.New(), gobuild.New(), gofuzz.New(), godifferential.New())
+	registry := engine.NewRegistry(goanalyzer.New(), gobuild.New(), gofuzz.New(), godifferential.New(), gosecurity.New())
 	reserved := map[string]struct{}{
-		"go-analyzer": {}, "go-build": {}, "go-differential": {}, "go-native-fuzz": {},
+		"go-analyzer": {}, "go-build": {}, "go-differential": {}, "go-native-fuzz": {}, "go-security": {},
 	}
 	for _, pluginConfig := range cfg.Execution.Plugins {
 		if _, clash := reserved[pluginConfig.Name]; clash {
@@ -156,7 +157,8 @@ func EngineVersions(cfg config.Config) (map[string]string, error) {
 func NewWorker(cfg config.Config, store ports.ArtifactStore, engines *engine.Registry, logger *slog.Logger) (*worker.Runner, error) {
 	return worker.New(worker.Config{
 		WorkDir: cfg.Worker.WorkDir, MaxExtractBytes: cfg.Limits.MaxRepositoryBytes,
-		Clock: nil, Logger: logger,
+		MaxOutputBytes: cfg.Worker.MaxOutputBytes,
+		Clock:          nil, Logger: logger,
 	}, worker.Deps{Engines: engines, Store: store})
 }
 
@@ -362,7 +364,7 @@ func ConfiguredLanguages(cfg config.Config) []string {
 }
 
 func ConfiguredEngines(cfg config.Config) []string {
-	engines := []string{"go-analyzer", "go-build", "go-differential", "go-native-fuzz"}
+	engines := []string{"go-analyzer", "go-build", "go-differential", "go-native-fuzz", "go-security"}
 	for _, plugin := range cfg.Execution.Plugins {
 		engines = append(engines, plugin.Name)
 	}
@@ -388,7 +390,7 @@ func EnsureLocalCluster(ctx context.Context, store ports.MetadataStore, cfg conf
 	cluster := domain.Cluster{
 		ID: "local", Region: cfg.Service.Region, ExecutorKind: "local",
 		Architectures: []string{runtime.GOARCH}, Languages: []string{"go"},
-		Engines:           []string{"go-analyzer", "go-build", "go-differential", "go-native-fuzz"},
+		Engines:           []string{"go-analyzer", "go-build", "go-differential", "go-native-fuzz", "go-security"},
 		IsolationTiers:    []domain.IsolationTier{domain.IsolationTrustedLocal},
 		AvailableCPUMilli: 64_000, AvailableMemoryMiB: 262_144, MaxConcurrentSteps: cfg.Execution.MaxConcurrent,
 		CostTier: 0, CasRegion: cfg.Service.Region, Healthy: true, Version: cfg.Service.Version,

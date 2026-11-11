@@ -15,22 +15,25 @@ import (
 const SchemaVersion = "patchproof.action/v1"
 
 type KeyInput struct {
-	TenantID       domain.TenantID
-	CacheEpoch     string
-	StepKind       domain.StepKind
-	Engine         string
-	EngineVersion  string
-	SnapshotDigest string
-	BaseSnapshot   string
-	HeadSnapshot   string
-	PolicyDigest   string
-	InputManifest  string
-	Architecture   string
-	Isolation      string
-	SubjectNetwork string
-	RuntimeClass   string
-	WorkerImage    string
-	Options        map[string]string
+	TenantID             domain.TenantID
+	CacheEpoch           string
+	StepKind             domain.StepKind
+	Engine               string
+	EngineVersion        string
+	SnapshotDigest       string
+	BaseSnapshot         string
+	HeadSnapshot         string
+	PolicyDigest         string
+	InputManifest        string
+	Architecture         string
+	Isolation            string
+	SubjectNetwork       string
+	RuntimeClass         string
+	WorkerImage          string
+	EngineImage          string
+	PluginEnvDigest      string
+	ResolvedInputsDigest string
+	Options              map[string]string
 }
 
 func Key(input KeyInput) (string, error) {
@@ -57,23 +60,26 @@ func Key(input KeyInput) (string, error) {
 		ordered = append(ordered, key+"="+options[key])
 	}
 	return evidence.CanonicalDigest(struct {
-		Schema         string   `json:"schema"`
-		Tenant         string   `json:"tenant"`
-		CacheEpoch     string   `json:"cache_epoch"`
-		StepKind       string   `json:"step_kind"`
-		Engine         string   `json:"engine"`
-		EngineVersion  string   `json:"engine_version"`
-		SnapshotDigest string   `json:"snapshot_digest"`
-		BaseSnapshot   string   `json:"base_snapshot"`
-		HeadSnapshot   string   `json:"head_snapshot"`
-		PolicyDigest   string   `json:"policy_digest"`
-		InputManifest  string   `json:"input_manifest"`
-		Architecture   string   `json:"architecture"`
-		Isolation      string   `json:"isolation"`
-		SubjectNetwork string   `json:"subject_network"`
-		RuntimeClass   string   `json:"runtime_class"`
-		WorkerImage    string   `json:"worker_image"`
-		Options        []string `json:"options"`
+		Schema               string   `json:"schema"`
+		Tenant               string   `json:"tenant"`
+		CacheEpoch           string   `json:"cache_epoch"`
+		StepKind             string   `json:"step_kind"`
+		Engine               string   `json:"engine"`
+		EngineVersion        string   `json:"engine_version"`
+		SnapshotDigest       string   `json:"snapshot_digest"`
+		BaseSnapshot         string   `json:"base_snapshot"`
+		HeadSnapshot         string   `json:"head_snapshot"`
+		PolicyDigest         string   `json:"policy_digest"`
+		InputManifest        string   `json:"input_manifest"`
+		Architecture         string   `json:"architecture"`
+		Isolation            string   `json:"isolation"`
+		SubjectNetwork       string   `json:"subject_network"`
+		RuntimeClass         string   `json:"runtime_class"`
+		WorkerImage          string   `json:"worker_image"`
+		EngineImage          string   `json:"engine_image"`
+		PluginEnvDigest      string   `json:"plugin_env_digest"`
+		ResolvedInputsDigest string   `json:"resolved_inputs_digest"`
+		Options              []string `json:"options"`
 	}{
 		Schema: SchemaVersion, Tenant: input.TenantID.String(), CacheEpoch: input.CacheEpoch,
 		StepKind: string(input.StepKind), Engine: engine, EngineVersion: engineVersion,
@@ -81,8 +87,23 @@ func Key(input KeyInput) (string, error) {
 		BaseSnapshot:   input.BaseSnapshot, HeadSnapshot: input.HeadSnapshot, PolicyDigest: input.PolicyDigest,
 		InputManifest: input.InputManifest, Architecture: input.Architecture, Isolation: input.Isolation,
 		SubjectNetwork: input.SubjectNetwork, RuntimeClass: input.RuntimeClass, WorkerImage: input.WorkerImage,
-		Options: ordered,
+		EngineImage: input.EngineImage, PluginEnvDigest: input.PluginEnvDigest,
+		ResolvedInputsDigest: input.ResolvedInputsDigest,
+		Options:              ordered,
 	})
+}
+
+// ResolvedSnapshotDigest binds the concrete staged snapshot inputs of a step.
+// For the cacheable analyze/impact/compile kinds these are the resolved base
+// and head snapshots; dependency-output steps are not cacheable.
+func ResolvedSnapshotDigest(run domain.Run) string {
+	digest, err := evidence.CanonicalDigest(map[string]string{
+		"base": run.BaseSnapshot, "head": run.HeadSnapshot, "snapshot": run.SnapshotDigest,
+	})
+	if err != nil {
+		return ""
+	}
+	return digest
 }
 
 func KeyForStep(step domain.Step, run domain.Run, cacheEpoch, engineVersion, workerImage string) (string, error) {
@@ -93,7 +114,30 @@ func KeyForStep(step domain.Step, run domain.Run, cacheEpoch, engineVersion, wor
 		BaseSnapshot:   run.BaseSnapshot, HeadSnapshot: run.HeadSnapshot, PolicyDigest: run.PolicyDigest,
 		InputManifest: step.InputManifestDigest, Architecture: step.Requirements.Architecture,
 		Isolation: string(step.Requirements.Isolation), SubjectNetwork: string(step.Requirements.SubjectNetwork),
-		RuntimeClass: step.Requirements.RuntimeClass, WorkerImage: workerImage, Options: step.Options,
+		RuntimeClass: step.Requirements.RuntimeClass, WorkerImage: workerImage,
+		ResolvedInputsDigest: ResolvedSnapshotDigest(run), Options: step.Options,
+	})
+}
+
+// KeyForStepWithEnvironment is the full key constructor. KeyForStep is kept
+// for callers that only have the legacy fields; it produces a different key
+// than a deployment that supplies engine/plugin digests, so all runtime paths
+// must use this variant.
+func KeyForStepWithEnvironment(step domain.Step, run domain.Run, cacheEpoch, engineVersion, workerImage, engineImage, pluginEnvDigest, resolvedInputsDigest string) (string, error) {
+	if resolvedInputsDigest == "" {
+		resolvedInputsDigest = ResolvedSnapshotDigest(run)
+	}
+	return Key(KeyInput{
+		TenantID: step.TenantID, CacheEpoch: cacheEpoch, StepKind: step.Kind,
+		Engine: step.Requirements.Engine, EngineVersion: engineVersion,
+		SnapshotDigest: run.SnapshotDigest,
+		BaseSnapshot:   run.BaseSnapshot, HeadSnapshot: run.HeadSnapshot, PolicyDigest: run.PolicyDigest,
+		InputManifest: step.InputManifestDigest, Architecture: step.Requirements.Architecture,
+		Isolation: string(step.Requirements.Isolation), SubjectNetwork: string(step.Requirements.SubjectNetwork),
+		RuntimeClass: step.Requirements.RuntimeClass, WorkerImage: workerImage,
+		EngineImage: engineImage, PluginEnvDigest: pluginEnvDigest,
+		ResolvedInputsDigest: resolvedInputsDigest,
+		Options:              step.Options,
 	})
 }
 

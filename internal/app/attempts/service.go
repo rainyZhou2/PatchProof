@@ -11,14 +11,16 @@ import (
 )
 
 type Service struct {
-	store          ports.MetadataStore
-	clock          ports.Clock
-	ttl            time.Duration
-	cacheEnabled   bool
-	cacheTTL       time.Duration
-	cacheEpoch     string
-	engineVersions map[string]string
-	workerImage    string
+	store           ports.MetadataStore
+	clock           ports.Clock
+	ttl             time.Duration
+	cacheEnabled    bool
+	cacheTTL        time.Duration
+	cacheEpoch      string
+	engineVersions  map[string]string
+	workerImage     string
+	engineImage     string
+	pluginEnvDigest string
 }
 
 func New(store ports.MetadataStore, clock ports.Clock, ttl time.Duration) (*Service, error) {
@@ -37,11 +39,20 @@ func New(store ports.MetadataStore, clock ports.Clock, ttl time.Duration) (*Serv
 // ConfigureActionCache enables result reuse for cacheable steps completed
 // through the worker callback API.
 func (s *Service) ConfigureActionCache(enabled bool, ttl time.Duration, epoch string, engineVersions map[string]string, workerImage string) {
+	s.ConfigureActionCacheDetails(enabled, ttl, epoch, engineVersions, workerImage, "", "")
+}
+
+// ConfigureActionCacheDetails includes the engine image and plugin environment
+// digest in cache keys. The legacy ConfigureActionCache remains for tests and
+// callers that do not have those deployment-specific values.
+func (s *Service) ConfigureActionCacheDetails(enabled bool, ttl time.Duration, epoch string, engineVersions map[string]string, workerImage, engineImage, pluginEnvDigest string) {
 	s.cacheEnabled = enabled
 	s.cacheTTL = ttl
 	s.cacheEpoch = epoch
 	s.engineVersions = engineVersions
 	s.workerImage = workerImage
+	s.engineImage = engineImage
+	s.pluginEnvDigest = pluginEnvDigest
 }
 
 func (s *Service) Start(ctx context.Context, ref domain.AttemptRef) error {
@@ -115,7 +126,7 @@ func (s *Service) storeActionCache(ctx context.Context, step domain.Step, result
 			break
 		}
 	}
-	key, err := actioncache.KeyForStep(step, run, s.cacheEpoch, engineVersion, s.workerImage)
+	key, err := actioncache.KeyForStepWithEnvironment(step, run, s.cacheEpoch, engineVersion, s.workerImage, s.engineImage, s.pluginEnvDigest, "")
 	if err != nil {
 		return
 	}

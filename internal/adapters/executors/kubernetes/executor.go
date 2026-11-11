@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,7 +42,7 @@ const (
 
 var (
 	supportedLanguages = []string{"go"}
-	supportedEngines   = []string{"go-analyzer", "go-differential", "go-fuzz", "z3-bounded", "semgrep"}
+	supportedEngines   = []string{"go-analyzer", "go-build", "go-differential", "go-native-fuzz", "go-security"}
 )
 
 // Config configures the Kubernetes executor.
@@ -257,18 +258,73 @@ func (e *Executor) Capabilities(ctx context.Context) (ports.ExecutorCapabilities
 	if e.cfg.BrokerImage != "" {
 		features = append(features, "brokered-offline-io")
 	}
+	active, queued := e.executionDepth(ctx)
+	cpuMilli, memoryMiB := e.nodeCapacity(ctx)
 	return ports.ExecutorCapabilities{
-		Name:           executorName,
-		ExecutorKind:   executorKind,
-		Region:         e.cfg.Region,
-		Architectures:  []string{"amd64", "arm64"},
-		Languages:      languages,
-		Engines:        engines,
-		IsolationTiers: isolations,
-		RuntimeClasses: runtimeClasses,
-		Features:       dedupeStrings(features),
-		MaxConcurrent:  e.cfg.MaxConcurrent,
+		Name:               executorName,
+		ExecutorKind:       executorKind,
+		Region:             e.cfg.Region,
+		Architectures:      []string{"amd64", "arm64"},
+		Languages:          languages,
+		Engines:            engines,
+		IsolationTiers:     isolations,
+		RuntimeClasses:     runtimeClasses,
+		Features:           dedupeStrings(features),
+		MaxConcurrent:      e.cfg.MaxConcurrent,
+		AvailableCPUMilli:  cpuMilli,
+		AvailableMemoryMiB: memoryMiB,
+		ActiveAttempts:     active,
+		QueueDepth:         queued,
 	}, nil
+}
+
+// nodeCapacity sums the allocatable CPU and memory of the execution nodes.
+// It is a scheduling envelope, not free capacity; the scheduler additionally
+// caps concurrent steps per cluster. A forbidden or unavailable node listing
+// leaves capacity unknown (zero) rather than failing the heartbeat.
+func (e *Executor) nodeCapacity(ctx context.Context) (cpuMilli, memoryMiB int64) {
+	if e.client == nil {
+		return 0, 0
+	}
+	nodes, err := e.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, 0
+	}
+	for _, node := range nodes.Items {
+		if quantity, ok := node.Status.Allocatable[corev1.ResourceCPU]; ok {
+			cpuMilli += quantity.MilliValue()
+		}
+		if quantity, ok := node.Status.Allocatable[corev1.ResourceMemory]; ok {
+			memoryMiB += quantity.Value() / (1024 * 1024)
+		}
+	}
+	return cpuMilli, memoryMiB
+}
+
+// executionDepth counts this executor's active and pending attempt Jobs. The
+// control plane owns the scheduler queue, so QueueDepth reports Jobs that are
+// active but not yet running; it is not the global controller backlog.
+func (e *Executor) executionDepth(ctx context.Context) (active, queued int) {
+	if e.client == nil {
+		return 0, 0
+	}
+	jobs, err := e.client.BatchV1().Jobs(e.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/managed-by=patchproof",
+	})
+	if err != nil {
+		return 0, 0
+	}
+	for _, job := range jobs.Items {
+		if job.Status.Active > 0 {
+			active += int(job.Status.Active)
+		}
+		for _, condition := range job.Status.Conditions {
+			if condition.Type == batchv1.JobSuspended && condition.Status == corev1.ConditionTrue {
+				queued++
+			}
+		}
+	}
+	return active, queued
 }
 
 // Start creates the spec config map, the token secret, and the worker job. It

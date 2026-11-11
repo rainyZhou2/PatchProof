@@ -11,9 +11,10 @@ import (
 )
 
 type Config struct {
-	Interval time.Duration
-	Batch    int
-	Clock    ports.Clock
+	Interval    time.Duration
+	Batch       int
+	MaxAttempts int
+	Clock       ports.Clock
 }
 
 type Relay struct {
@@ -33,6 +34,9 @@ func New(store ports.MetadataStore, bus ports.EventBus, config Config, metrics *
 	}
 	if config.Batch <= 0 {
 		config.Batch = 128
+	}
+	if config.MaxAttempts <= 0 {
+		config.MaxAttempts = 10
 	}
 	if config.Clock == nil {
 		config.Clock = systemClock{}
@@ -68,10 +72,16 @@ func (r *Relay) drain(ctx context.Context) error {
 	}
 	if err := r.bus.Publish(ctx, events); err != nil {
 		for _, event := range events {
+			now := r.config.Clock.Now()
 			if recordErr := r.store.RecordOutboxFailure(ctx, domain.OutboxDeliveryFailure{
-				EventID: event.ID, Reason: err.Error(), At: r.config.Clock.Now(),
+				EventID: event.ID, Reason: err.Error(), At: now,
 			}); recordErr != nil {
 				r.logger.Warn("record outbox failure", slog.String("error", recordErr.Error()))
+			}
+			if event.Attempts+1 >= r.config.MaxAttempts {
+				if deadErr := r.store.MarkOutboxDeadLettered(ctx, []domain.EventID{event.ID}, now); deadErr != nil {
+					r.logger.Warn("dead-letter outbox event", slog.String("event_id", string(event.ID)), slog.String("error", deadErr.Error()))
+				}
 			}
 			if r.metrics != nil {
 				r.metrics.OutboxFailures.WithLabelValues(string(event.Type)).Inc()

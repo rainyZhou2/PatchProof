@@ -570,3 +570,21 @@ func TestExplicitShutdown(t *testing.T) {
 		t.Fatal("Start did not return after Shutdown")
 	}
 }
+
+func TestMergeCapabilitiesReportsCapacityAndDepth(t *testing.T) {
+	cluster := domain.Cluster{ID: "cluster-a", Region: "region-1"}
+	mergeCapabilities(&cluster, ports.ExecutorCapabilities{
+		ExecutorKind: "kubernetes", MaxConcurrent: 8,
+		AvailableCPUMilli: 32000, AvailableMemoryMiB: 65536,
+		ActiveAttempts: 3, QueueDepth: 2,
+	})
+	if cluster.ExecutorKind != "remote" {
+		t.Fatalf("executor kind = %q, want remote", cluster.ExecutorKind)
+	}
+	if cluster.AvailableCPUMilli != 32000 || cluster.AvailableMemoryMiB != 65536 {
+		t.Fatalf("capacity = %d/%d", cluster.AvailableCPUMilli, cluster.AvailableMemoryMiB)
+	}
+	if cluster.ActiveAttempts != 3 || cluster.QueueDepth != 2 {
+		t.Fatalf("depth = %d/%d", cluster.ActiveAttempts, cluster.QueueDepth)
+	}
+}

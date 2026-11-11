@@ -21,6 +21,7 @@ type Config struct {
 	Region             string
 	OwnerID            string
 	ShardCount         int
+	ShardLeaseLimit    int
 	BatchSize          int
 	LeaseTTL           time.Duration
 	ShardLeaseTTL      time.Duration
@@ -36,6 +37,8 @@ type Config struct {
 	CacheEpoch         string
 	EngineVersions     map[string]string
 	WorkerImage        string
+	EngineImage        string
+	PluginEnvDigest    string
 	Clock              ports.Clock
 	Logger             *slog.Logger
 }
@@ -123,6 +126,9 @@ func (s *Service) Run(ctx context.Context) error {
 	if err := s.refreshShards(ctx); err != nil {
 		s.logger.Warn("initial shard ownership failed", slog.String("error", err.Error()))
 	}
+	if err := s.adoptExecutions(ctx, tracker); err != nil && ctx.Err() == nil {
+		s.logger.Warn("in-flight adoption failed", slog.String("error", err.Error()))
+	}
 	for {
 		if err := s.leaseSteps(ctx, tracker); err != nil && ctx.Err() == nil {
 			s.logger.Warn("lease batch failed", slog.String("error", err.Error()))
@@ -136,6 +142,9 @@ func (s *Service) Run(ctx context.Context) error {
 		case <-shardTicker.C:
 			if err := s.refreshShards(ctx); err != nil && ctx.Err() == nil {
 				s.logger.Warn("shard refresh failed", slog.String("error", err.Error()))
+			}
+			if err := s.adoptExecutions(ctx, tracker); err != nil && ctx.Err() == nil {
+				s.logger.Warn("in-flight adoption failed", slog.String("error", err.Error()))
 			}
 		case <-expiryTicker.C:
 			if err := s.expireLeases(ctx, tracker); err != nil && ctx.Err() == nil {
@@ -155,7 +164,7 @@ func (s *Service) refreshShards(ctx context.Context) error {
 	for shard := 0; shard < s.config.ShardCount; shard++ {
 		shards = append(shards, shard)
 	}
-	owned, err := s.store.AcquireShardLeases(ctx, shards, s.config.OwnerID, s.config.ShardLeaseTTL, s.clock.Now())
+	owned, err := s.store.AcquireShardLeases(ctx, shards, s.config.OwnerID, s.config.ShardLeaseTTL, s.clock.Now(), s.config.ShardLeaseLimit)
 	if err != nil {
 		return err
 	}
@@ -227,6 +236,9 @@ func (s *Service) leaseSteps(ctx context.Context, tracker *tracker) error {
 	clusters = live
 	activeByCluster := tracker.countsByCluster()
 	tenantCounts := map[domain.TenantID]int{}
+	tenantCache := map[domain.TenantID]domain.Tenant{}
+	usageCache := map[domain.TenantID]domain.TenantUsage{}
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	runCache := map[domain.RunID]domain.Run{}
 	for _, step := range candidates {
 		if ctx.Err() != nil {
@@ -251,8 +263,20 @@ func (s *Service) leaseSteps(ctx context.Context, tracker *tracker) error {
 				continue
 			}
 		}
+		tenant, ok := tenantCache[step.TenantID]
+		if !ok {
+			loaded, loadErr := s.store.GetTenant(ctx, step.TenantID)
+			if loadErr != nil {
+				continue
+			}
+			tenant = loaded
+			tenantCache[step.TenantID] = tenant
+		}
+		if quotaExhausted(tenant.Quota, usageCache, step.TenantID, dayStart, s.store, ctx, &usageCache) {
+			continue
+		}
 		limit := s.config.MaxStepsPerTenant
-		if tenant, err := s.store.GetTenant(ctx, step.TenantID); err == nil && tenant.Quota.MaxConcurrentSteps > 0 {
+		if tenant.Quota.MaxConcurrentSteps > 0 {
 			limit = minInt(limit, tenant.Quota.MaxConcurrentSteps)
 		}
 		if limit > 0 {
@@ -316,6 +340,9 @@ func (s *Service) leaseSteps(ctx context.Context, tracker *tracker) error {
 			})
 			continue
 		}
+		if err := s.store.SetAttemptExecutor(ctx, lease.Ref(), execRef.ExternalID, s.clock.Now()); err != nil {
+			s.logger.Warn("persist executor reference failed", slog.String("attempt_id", lease.AttemptID.String()), slog.String("error", err.Error()))
+		}
 		if s.metrics != nil {
 			s.metrics.StepQueueWait.WithLabelValues(s.region(run), string(step.Kind), cluster.ID.String()).Observe(now.Sub(step.CreatedAt).Seconds())
 		}
@@ -325,7 +352,7 @@ func (s *Service) leaseSteps(ctx context.Context, tracker *tracker) error {
 			engineVersion = s.engineVersion(step)
 			if engineVersion == "" {
 				s.logger.Warn("cacheable step has no engine version; skipping action cache", slog.String("step_id", step.ID.String()), slog.String("engine", step.Requirements.Engine))
-			} else if key, keyErr := actioncache.KeyForStep(step, run, s.config.CacheEpoch, engineVersion, s.config.WorkerImage); keyErr == nil {
+			} else if key, keyErr := actioncache.KeyForStepWithEnvironment(step, run, s.config.CacheEpoch, engineVersion, s.config.WorkerImage, s.config.EngineImage, s.config.PluginEnvDigest, ""); keyErr == nil {
 				cacheKey = key
 			}
 		}
@@ -528,6 +555,61 @@ func (s *Service) statBlob(ctx context.Context, scope ports.SecurityScope, uri s
 	return info.Ref, nil
 }
 
+// adoptExecutions rebuilds the in-memory tracker from leased/running steps
+// after a scheduler restart. The persisted executor reference identifies the
+// existing Job, so reconcile observes and commits it instead of starting a
+// duplicate attempt.
+func (s *Service) adoptExecutions(ctx context.Context, tracker *tracker) error {
+	steps, err := s.store.ListInFlightSteps(ctx, 500)
+	if err != nil {
+		return err
+	}
+	now := s.clock.Now()
+	for _, step := range steps {
+		if step.CurrentAttemptID == "" {
+			continue
+		}
+		attempts, err := s.store.ListAttempts(ctx, step.TenantID, step.ID)
+		if err != nil {
+			continue
+		}
+		var current *domain.Attempt
+		for i := range attempts {
+			if attempts[i].ID == step.CurrentAttemptID {
+				current = &attempts[i]
+				break
+			}
+		}
+		if current == nil || current.ExecutorRef == "" || current.ClusterID == "" || tracker.contains(current.ID) {
+			continue
+		}
+		cluster, err := s.store.GetCluster(ctx, current.ClusterID)
+		if err != nil {
+			continue
+		}
+		deadline := now.Add(step.Requirements.Deadline())
+		if step.LeaseDeadline != nil {
+			deadline = *step.LeaseDeadline
+		}
+		started := now
+		if step.StartedAt != nil {
+			started = *step.StartedAt
+		}
+		tracker.add(trackedExecution{
+			ref: domain.AttemptRef{
+				TenantID: step.TenantID, RunID: step.RunID, StepID: step.ID,
+				AttemptID: current.ID, Generation: step.Generation,
+			},
+			execRef: ports.ExecutionRef{
+				Executor: cluster.ExecutorKind, ClusterID: cluster.ID,
+				Namespace: cluster.Namespace, ExternalID: current.ExecutorRef,
+			},
+			startedAt: started, deadline: deadline, cluster: cluster,
+		})
+	}
+	return nil
+}
+
 func (s *Service) reconcile(ctx context.Context, tracker *tracker) error {
 	executions := tracker.snapshot()
 	for _, execution := range executions {
@@ -551,6 +633,7 @@ func (s *Service) reconcile(ctx context.Context, tracker *tracker) error {
 		case ports.ExecutionCompleted:
 			if observation.Result == nil {
 				if step, stepErr := s.store.GetStep(ctx, execution.ref.TenantID, execution.ref.StepID); stepErr == nil && step.Status.Terminal() {
+					s.cleanupExecution(ctx, execution)
 					tracker.remove(execution.ref.AttemptID)
 					continue
 				}
@@ -566,6 +649,7 @@ func (s *Service) reconcile(ctx context.Context, tracker *tracker) error {
 				s.logger.Warn("commit result failed", slog.String("attempt_id", execution.ref.AttemptID.String()), slog.String("error", err.Error()))
 				continue
 			}
+			s.cleanupExecution(ctx, execution)
 			tracker.remove(execution.ref.AttemptID)
 		case ports.ExecutionFailed, ports.ExecutionLost, ports.ExecutionCancelled:
 			class := observation.ErrorClass
@@ -576,9 +660,21 @@ func (s *Service) reconcile(ctx context.Context, tracker *tracker) error {
 			_, _ = s.store.FailAttempt(ctx, domain.AttemptFailure{
 				Ref: execution.ref, ErrorClass: class, Message: observation.Message, Retryable: retryable, At: s.clock.Now(),
 			})
+			s.cleanupExecution(ctx, execution)
 			tracker.remove(execution.ref.AttemptID)
 		case ports.ExecutionPending, ports.ExecutionRunning:
 			if step, err := s.store.GetStep(ctx, execution.ref.TenantID, execution.ref.StepID); err == nil && step.Status.Terminal() {
+				s.cleanupExecution(ctx, execution)
+				tracker.remove(execution.ref.AttemptID)
+				continue
+			}
+			if run, err := s.store.GetRun(ctx, execution.ref.TenantID, execution.ref.RunID); err == nil &&
+				(run.Status == domain.RunCancelled || run.Status == domain.RunCancelling) {
+				_ = executor.Cancel(ctx, execution.execRef)
+				_, _ = s.store.FailAttempt(ctx, domain.AttemptFailure{
+					Ref: execution.ref, ErrorClass: domain.ErrCancelled, Message: "run was cancelled", Retryable: false, At: s.clock.Now(),
+				})
+				s.cleanupExecution(ctx, execution)
 				tracker.remove(execution.ref.AttemptID)
 				continue
 			}
@@ -636,12 +732,31 @@ func (s *Service) commitResult(ctx context.Context, execution trackedExecution, 
 	return nil
 }
 
+// verifyCachedArtifacts ensures a cache hit is backed by live CAS objects.
+// A cache entry can outlive an artifact under manual GC or S3 lifecycle rules;
+// committing it without checking turns a stale reference into a successful step.
+func (s *Service) verifyCachedArtifacts(ctx context.Context, step domain.Step, result domain.StepResult) error {
+	scope := ports.SecurityScope{TenantID: step.TenantID, TrustDomain: "run", Region: step.Requirements.Region}
+	refs := make([]domain.CASRef, 0, len(result.Artifacts))
+	refs = append(refs, result.Artifacts...)
+	for _, item := range result.Evidence {
+		refs = append(refs, item.Artifacts...)
+		refs = append(refs, item.Inputs...)
+	}
+	for _, ref := range refs {
+		if _, err := s.cas.Stat(ctx, scope, ref); err != nil {
+			return fmt.Errorf("%s: %w", ref.URI(), err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) tryCachedStep(ctx context.Context, step domain.Step, run domain.Run, now time.Time) (bool, error) {
 	engineVersion := s.engineVersion(step)
 	if engineVersion == "" {
 		return false, nil
 	}
-	key, err := actioncache.KeyForStep(step, run, s.config.CacheEpoch, engineVersion, s.config.WorkerImage)
+	key, err := actioncache.KeyForStepWithEnvironment(step, run, s.config.CacheEpoch, engineVersion, s.config.WorkerImage, s.config.EngineImage, s.config.PluginEnvDigest, "")
 	if err != nil {
 		return false, err
 	}
@@ -655,6 +770,11 @@ func (s *Service) tryCachedStep(ctx context.Context, step domain.Step, run domai
 	if entry.EngineVersion != engineVersion {
 		s.logger.Warn("action cache entry engine version mismatch", slog.String("step_id", step.ID.String()),
 			slog.String("expected", engineVersion), slog.String("stored", entry.EngineVersion))
+		return false, nil
+	}
+	if err := s.verifyCachedArtifacts(ctx, step, entry.Result); err != nil {
+		s.logger.Warn("action cache entry references unavailable artifacts; re-executing",
+			slog.String("step_id", step.ID.String()), slog.String("error", err.Error()))
 		return false, nil
 	}
 	attemptID := domain.NewAttemptID()
@@ -679,6 +799,48 @@ func (s *Service) tryCachedStep(ctx context.Context, step domain.Step, run domai
 	}
 	s.logger.Info("action cache hit", slog.String("step_id", step.ID.String()), slog.String("kind", string(step.Kind)))
 	return true, nil
+}
+
+// quotaExhausted checks daily CPU, fuzz and storage quotas. The usage map is
+// per scheduling tick so a tenant with many candidates causes one metadata
+// query rather than one per candidate.
+func quotaExhausted(quota domain.TenantQuota, cache map[domain.TenantID]domain.TenantUsage, tenantID domain.TenantID, since time.Time, store ports.MetadataStore, ctx context.Context, cachePtr *map[domain.TenantID]domain.TenantUsage) bool {
+	if quota.CPUCoreSecondsDay <= 0 && quota.FuzzSecondsDay <= 0 && quota.StorageBytes <= 0 {
+		return false
+	}
+	usage, ok := cache[tenantID]
+	if !ok {
+		loaded, err := store.TenantUsage(ctx, tenantID, since)
+		if err != nil {
+			return true
+		}
+		usage = loaded
+		(*cachePtr)[tenantID] = usage
+	}
+	if quota.CPUCoreSecondsDay > 0 && usage.DailyCPUSeconds >= quota.CPUCoreSecondsDay {
+		return true
+	}
+	if quota.FuzzSecondsDay > 0 && usage.DailyFuzzSeconds >= quota.FuzzSecondsDay {
+		return true
+	}
+	if quota.StorageBytes > 0 && usage.CASWrittenBytes >= quota.StorageBytes {
+		return true
+	}
+	return false
+}
+
+// cleanupExecution deletes executor resources after a terminal outcome. It is
+// best-effort and must not block the reconcile loop or lose the committed result.
+func (s *Service) cleanupExecution(ctx context.Context, execution trackedExecution) {
+	executor, err := s.executors.ForCluster(execution.cluster)
+	if err != nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := executor.Cancel(cleanupCtx, execution.execRef); err != nil {
+		s.logger.Warn("execution cleanup failed", slog.String("attempt_id", execution.ref.AttemptID.String()), slog.String("error", err.Error()))
+	}
 }
 
 func (s *Service) expireLeases(ctx context.Context, tracker *tracker) error {
@@ -727,6 +889,13 @@ type tracker struct {
 
 func newTracker() *tracker {
 	return &tracker{data: make(map[domain.AttemptID]trackedExecution)}
+}
+
+func (t *tracker) contains(attemptID domain.AttemptID) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.data[attemptID]
+	return ok
 }
 
 func (t *tracker) add(execution trackedExecution) {

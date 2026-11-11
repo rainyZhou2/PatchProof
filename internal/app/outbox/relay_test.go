@@ -91,3 +91,27 @@ func TestRelayRecordsFailure(t *testing.T) {
 		t.Fatalf("expected one publish attempt, got %d", bus.published)
 	}
 }
+
+func TestRelayDeadLettersAfterMaxAttempts(t *testing.T) {
+	store := memorystore.New()
+	bus := &errorBus{}
+	tenant := domain.TenantID("11111111-1111-4111-8111-111111111111")
+	event := testEvent(t, tenant)
+	if err := store.AppendOutbox(context.Background(), []domain.OutboxEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	relay, err := New(store, bus, Config{Interval: time.Hour, Batch: 10, MaxAttempts: 1}, nil, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.drain(context.Background()); err == nil {
+		t.Fatal("expected a publish error")
+	}
+	pending, err := store.PendingOutbox(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("dead-lettered event still pending: %#v", pending)
+	}
+}

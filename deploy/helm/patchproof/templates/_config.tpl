@@ -38,6 +38,7 @@ events:
   ackWait: {{ $root.Values.nats.ackWait | quote }}
   outboxInterval: {{ $root.Values.nats.outboxInterval | quote }}
   outboxBatch: 128
+  outboxMaxAttempts: {{ $root.Values.nats.outboxMaxAttempts }}
 artifacts:
   driver: s3
   endpoint: {{ $root.Values.cas.s3.endpoint | quote }}
@@ -126,6 +127,11 @@ execution:
   reportBackUrl: {{ default $root.Values.externalUrl $root.Values.execution.reportBackUrl | quote }}
 scheduler:
   shardCount: {{ $root.Values.scheduler.shardCount }}
+  {{- $shardLeaseLimit := int $root.Values.scheduler.shardLeaseLimit }}
+  {{- if and (eq $shardLeaseLimit 0) (gt (int $root.Values.controller.replicas) 1) }}
+  {{- $shardLeaseLimit = div (add (int $root.Values.scheduler.shardCount) (sub (int $root.Values.controller.replicas) 1)) (int $root.Values.controller.replicas) }}
+  {{- end }}
+  shardLeaseLimit: {{ $shardLeaseLimit }}
   leaseTtl: {{ $root.Values.scheduler.leaseTtl | quote }}
   pollInterval: {{ $root.Values.scheduler.pollInterval | quote }}
   batchSize: {{ $root.Values.scheduler.batchSize }}

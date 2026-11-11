@@ -586,6 +586,18 @@ func mergeCapabilities(cluster *domain.Cluster, capabilities ports.ExecutorCapab
 	if capabilities.MaxConcurrent > 0 {
 		cluster.MaxConcurrentSteps = capabilities.MaxConcurrent
 	}
+	if capabilities.AvailableCPUMilli > 0 {
+		cluster.AvailableCPUMilli = capabilities.AvailableCPUMilli
+	}
+	if capabilities.AvailableMemoryMiB > 0 {
+		cluster.AvailableMemoryMiB = capabilities.AvailableMemoryMiB
+	}
+	if capabilities.ActiveAttempts >= 0 {
+		cluster.ActiveAttempts = capabilities.ActiveAttempts
+	}
+	if capabilities.QueueDepth >= 0 {
+		cluster.QueueDepth = capabilities.QueueDepth
+	}
 	if len(capabilities.Features) > 0 {
 		if cluster.Labels == nil {
 			cluster.Labels = map[string]string{}

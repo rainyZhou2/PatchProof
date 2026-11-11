@@ -29,6 +29,7 @@ type Config struct {
 	MaxExtractBytes int64
 	MaxFiles        int
 	MaxArtifacts    int
+	MaxOutputBytes  int64
 	UploadRetries   int
 	KeepWorkspace   bool
 	Clock           ports.Clock
@@ -63,6 +64,9 @@ func New(config Config, deps Deps) (*Runner, error) {
 	}
 	if config.MaxArtifacts <= 0 {
 		config.MaxArtifacts = 256
+	}
+	if config.MaxOutputBytes <= 0 {
+		config.MaxOutputBytes = 1 << 30
 	}
 	if config.Clock == nil {
 		config.Clock = systemClock{}
@@ -172,6 +176,18 @@ func (r *Runner) finalizeResult(spec domain.StepSpec, selected engine.Engine, re
 	}
 	if len(result.Artifacts) > r.config.MaxArtifacts {
 		return fmt.Errorf("engine produced %d artifacts, limit is %d", len(result.Artifacts), r.config.MaxArtifacts)
+	}
+	var outputBytes int64
+	for _, artifact := range result.Artifacts {
+		outputBytes += artifact.SizeBytes
+	}
+	for _, item := range result.Evidence {
+		for _, artifact := range item.Artifacts {
+			outputBytes += artifact.SizeBytes
+		}
+	}
+	if outputBytes > r.config.MaxOutputBytes {
+		return fmt.Errorf("engine output is %d bytes, limit is %d", outputBytes, r.config.MaxOutputBytes)
 	}
 	claimID := domain.ClaimID(stepopts.Get(spec.Options, stepopts.ClaimID))
 	now := r.config.Clock.Now()

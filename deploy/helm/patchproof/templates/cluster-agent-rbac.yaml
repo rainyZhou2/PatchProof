@@ -38,3 +38,33 @@ subjects:
     name: {{ include "patchproof.clusterAgentServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.clusterAgent.enabled .Values.clusterAgent.rbac.create .Values.clusterAgent.rbac.nodes }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "patchproof.fullname" . }}-cluster-agent-nodes
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "patchproof.fullname" . }}-cluster-agent-nodes
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "patchproof.fullname" . }}-cluster-agent-nodes
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "patchproof.clusterAgentServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

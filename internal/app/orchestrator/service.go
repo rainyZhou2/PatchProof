@@ -617,8 +617,15 @@ func needsPartial(report domain.Report, requireAttestation bool) bool {
 			return true
 		}
 	}
+	allowedInconclusive := map[string]struct{}{}
+	for _, check := range report.AllowInconclusiveOn {
+		allowedInconclusive[domain.NormalizeCheckName(check)] = struct{}{}
+	}
 	requested := map[string]struct{}{}
 	for _, check := range report.RequestedChecks {
+		if _, allowed := allowedInconclusive[domain.NormalizeCheckName(check)]; allowed {
+			continue
+		}
 		requested[check] = struct{}{}
 	}
 	for _, check := range report.CompletedChecks {

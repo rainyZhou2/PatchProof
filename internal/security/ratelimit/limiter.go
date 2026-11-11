@@ -9,6 +9,10 @@ import (
 	"github.com/patchproof/patchproof/internal/domain"
 )
 
+// Resolver returns the per-tenant rate and burst. A nil resolver keeps the
+// process-wide defaults configured at construction time.
+type Resolver func(domain.TenantID) (rps int, burst int)
+
 type Limiter struct {
 	mu         sync.Mutex
 	buckets    map[domain.TenantID]*bucket
@@ -17,10 +21,13 @@ type Limiter struct {
 	lastGC     time.Time
 	maxEntries int
 	now        func() time.Time
+	resolver   Resolver
 }
 
 type bucket struct {
 	limiter  *rate.Limiter
+	rps      rate.Limit
+	burst    int
 	lastSeen time.Time
 }
 
@@ -37,16 +44,41 @@ func New(rps int, burst int) *Limiter {
 	}
 }
 
+func (l *Limiter) SetResolver(resolver Resolver) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.resolver = resolver
+	l.mu.Unlock()
+}
+
 func (l *Limiter) Allow(tenantID domain.TenantID) bool {
 	if l == nil {
 		return true
 	}
 	l.mu.Lock()
+	resolver := l.resolver
+	defaultRPS, defaultBurst := l.limit, l.burst
+	l.mu.Unlock()
+
+	rps, burst := defaultRPS, defaultBurst
+	if resolver != nil {
+		if resolvedRPS, resolvedBurst := resolver(tenantID); resolvedRPS > 0 {
+			rps = rate.Limit(resolvedRPS)
+			if resolvedBurst <= 0 {
+				resolvedBurst = resolvedRPS * 2
+			}
+			burst = resolvedBurst
+		}
+	}
+
+	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	entry, ok := l.buckets[tenantID]
-	if !ok {
-		entry = &bucket{limiter: rate.NewLimiter(l.limit, l.burst)}
+	if !ok || entry.rps != rps || entry.burst != burst {
+		entry = &bucket{limiter: rate.NewLimiter(rps, burst), rps: rps, burst: burst}
 		l.buckets[tenantID] = entry
 	}
 	entry.lastSeen = now

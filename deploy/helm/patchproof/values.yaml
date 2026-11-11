@@ -51,6 +51,7 @@ nats:
   maxAckPending: 512
   ackWait: 30s
   outboxInterval: 500ms
+  outboxMaxAttempts: 10
 
 cas:
   s3:
@@ -146,6 +147,8 @@ execution:
 
 scheduler:
   shardCount: 16
+  # 0 derives ceil(shardCount/controller.replicas); set explicitly to override.
+  shardLeaseLimit: 0
   leaseTtl: 2m
   pollInterval: 1s
   batchSize: 64
@@ -247,6 +250,10 @@ clusterAgent:
     key: token
   rbac:
     create: false
+    # Read-only node access lets the agent report allocatable cluster capacity.
+    # Set false when a cluster policy forbids cluster-scoped reads; capacity
+    # will then be reported as unknown.
+    nodes: true
   resources:
     requests:
       cpu: 200m

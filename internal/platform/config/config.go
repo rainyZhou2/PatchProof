@@ -83,15 +83,16 @@ type DatabaseConfig struct {
 }
 
 type EventsConfig struct {
-	Driver         string        `yaml:"driver"`
-	URLs           []string      `yaml:"urls"`
-	Stream         string        `yaml:"stream"`
-	ConsumerPrefix string        `yaml:"consumerPrefix"`
-	MaxAckPending  int           `yaml:"maxAckPending"`
-	BatchSize      int           `yaml:"batchSize"`
-	AckWait        time.Duration `yaml:"ackWait"`
-	OutboxInterval time.Duration `yaml:"outboxInterval"`
-	OutboxBatch    int           `yaml:"outboxBatch"`
+	Driver            string        `yaml:"driver"`
+	URLs              []string      `yaml:"urls"`
+	Stream            string        `yaml:"stream"`
+	ConsumerPrefix    string        `yaml:"consumerPrefix"`
+	MaxAckPending     int           `yaml:"maxAckPending"`
+	BatchSize         int           `yaml:"batchSize"`
+	AckWait           time.Duration `yaml:"ackWait"`
+	OutboxInterval    time.Duration `yaml:"outboxInterval"`
+	OutboxBatch       int           `yaml:"outboxBatch"`
+	OutboxMaxAttempts int           `yaml:"outboxMaxAttempts"`
 }
 
 type ArtifactsConfig struct {
@@ -183,6 +184,7 @@ type Toleration struct {
 
 type SchedulerConfig struct {
 	ShardCount         int           `yaml:"shardCount"`
+	ShardLeaseLimit    int           `yaml:"shardLeaseLimit"`
 	LeaseTTL           time.Duration `yaml:"leaseTtl"`
 	RenewInterval      time.Duration `yaml:"renewInterval"`
 	PollInterval       time.Duration `yaml:"pollInterval"`
@@ -465,6 +467,8 @@ func applyEnv(cfg *Config) error {
 		value *int
 	}{
 		{"PATCHPROOF_SHARD_COUNT", &cfg.Scheduler.ShardCount},
+		{"PATCHPROOF_SHARD_LEASE_LIMIT", &cfg.Scheduler.ShardLeaseLimit},
+		{"PATCHPROOF_OUTBOX_MAX_ATTEMPTS", &cfg.Events.OutboxMaxAttempts},
 		{"PATCHPROOF_SCHEDULER_BATCH", &cfg.Scheduler.BatchSize},
 		{"PATCHPROOF_MAX_PARALLEL_STEPS", &cfg.Limits.MaxParallelSteps},
 	}
@@ -628,6 +632,9 @@ func (c Config) Validate() error {
 	}
 	if c.Scheduler.ShardCount <= 0 || c.Scheduler.ShardCount > 1024 {
 		return fmt.Errorf("scheduler.shardCount: must be between 1 and 1024")
+	}
+	if c.Scheduler.ShardLeaseLimit < 0 || c.Scheduler.ShardLeaseLimit > c.Scheduler.ShardCount {
+		return fmt.Errorf("scheduler.shardLeaseLimit: must be between 0 and shardCount")
 	}
 	if c.Scheduler.ActionCacheTTL < 0 {
 		return fmt.Errorf("scheduler.actionCacheTtl: must not be negative")

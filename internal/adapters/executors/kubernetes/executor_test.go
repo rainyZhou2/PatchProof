@@ -11,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -639,6 +640,45 @@ func TestCapabilities(t *testing.T) {
 	}
 	if len(capabilities.RuntimeClasses) != 1 || capabilities.RuntimeClasses[0] != "gvisor" {
 		t.Fatalf("runtime classes = %v", capabilities.RuntimeClasses)
+	}
+}
+
+func TestCapabilitiesReportsNodeCapacityAndExecutionDepth(t *testing.T) {
+	executor, client := newTestExecutor(t, nil)
+	ctx := context.Background()
+
+	if _, err := client.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("4"),
+			corev1.ResourceMemory: resource.MustParse("8Gi"),
+		}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if _, err := client.BatchV1().Jobs(testNamespace).Create(ctx, &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "active-job", Namespace: testNamespace, Labels: map[string]string{
+			"app.kubernetes.io/managed-by": "patchproof",
+		}},
+		Status: batchv1.JobStatus{Active: 1, Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobSuspended, Status: corev1.ConditionTrue,
+		}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	capabilities, err := executor.Capabilities(ctx)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if capabilities.AvailableCPUMilli != 4000 || capabilities.AvailableMemoryMiB != 8192 {
+		t.Fatalf("capacity = %d/%d, want 4000/8192", capabilities.AvailableCPUMilli, capabilities.AvailableMemoryMiB)
+	}
+	if capabilities.ActiveAttempts != 1 {
+		t.Fatalf("active attempts = %d, want 1", capabilities.ActiveAttempts)
+	}
+	if capabilities.QueueDepth != 1 {
+		t.Fatalf("queue depth = %d, want 1", capabilities.QueueDepth)
 	}
 }
 

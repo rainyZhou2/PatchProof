@@ -267,6 +267,7 @@ func (a *App) buildController(cfg config.Config, logger *slog.Logger, metrics *t
 		AttemptTokenTTL:    cfg.Auth.AttemptTokenTTL,
 		ActionCacheEnabled: cfg.Scheduler.ActionCacheEnabled, ActionCacheTTL: cfg.Scheduler.ActionCacheTTL,
 		CacheEpoch: cacheEpoch(cfg), EngineVersions: a.engines, WorkerImage: cfg.Execution.WorkerImage,
+		EngineImage: cfg.Execution.EngineImage, PluginEnvDigest: PluginEnvironmentDigest(cfg),
 		Logger: logger,
 	}, metrics)
 	if err != nil {
@@ -274,6 +275,7 @@ func (a *App) buildController(cfg config.Config, logger *slog.Logger, metrics *t
 	}
 	relay, err := outbox.New(a.Store, a.Bus, outbox.Config{
 		Interval: cfg.Events.OutboxInterval, Batch: cfg.Events.OutboxBatch,
+		MaxAttempts: cfg.Events.OutboxMaxAttempts,
 	}, metrics, logger)
 	if err != nil {
 		return err
@@ -319,11 +321,12 @@ func (a *App) buildAPI(cfg config.Config, logger *slog.Logger, metrics *telemetr
 	if err != nil {
 		return err
 	}
-	attemptService.ConfigureActionCache(cfg.Scheduler.ActionCacheEnabled, cfg.Scheduler.ActionCacheTTL, cacheEpoch(cfg), a.engines, cfg.Execution.WorkerImage)
+	attemptService.ConfigureActionCacheDetails(cfg.Scheduler.ActionCacheEnabled, cfg.Scheduler.ActionCacheTTL, cacheEpoch(cfg), a.engines, cfg.Execution.WorkerImage, cfg.Execution.EngineImage, PluginEnvironmentDigest(cfg))
 	reporters := map[string]ports.Reporter{
 		"json": jsonreport.New(), "markdown": markdownreport.New(), "sarif": sarifreport.New(),
 	}
 	limiter := ratelimit.New(cfg.Limits.APIRPSPerTenant, cfg.Limits.APIRPSPerTenant*2)
+	limiter.SetResolver(newTenantRateResolver(a.Store, cfg.Limits.APIRPSPerTenant).Resolve)
 	server, err := api.New(api.Deps{
 		Runs: runService, Admin: adminService, Attempts: attemptService, Tokens: tokenIssuer,
 		Authenticator: authenticator, Reporters: reporters, Metrics: metrics, Limiter: limiter,
@@ -443,6 +446,21 @@ func WorkerEnvironment(cfg config.Config) map[string]string {
 		environment["PATCHPROOF_OTLP_ENDPOINT"] = cfg.Telemetry.OTLPEndpoint
 	}
 	return environment
+}
+
+// PluginEnvironmentDigest binds plugin command/env configuration into action
+// cache keys. Plugin binaries are covered by the worker image; the configured
+// environment and command are deployment inputs that can change behavior.
+func PluginEnvironmentDigest(cfg config.Config) string {
+	if len(cfg.Execution.Plugins) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(cfg.Execution.Plugins)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func cacheEpoch(cfg config.Config) string {
