@@ -7,7 +7,7 @@
 <p align="center">
   <a href="../../go.mod"><img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&amp;logoColor=white" alt="Go 1.26+"></a>
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="Apache-2.0"></a>
-  <a href="https://github.com/patchproof/patchproof/actions/workflows/ci.yml"><img src="https://github.com/patchproof/patchproof/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/rainyZhou2/PatchProof/actions/workflows/ci.yml"><img src="https://github.com/rainyZhou2/PatchProof/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
 **面向 Go 仓库的反例优先补丁验证平台。**
