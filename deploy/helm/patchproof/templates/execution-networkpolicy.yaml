@@ -1,4 +1,104 @@
 {{- if and .Values.networkPolicy.enabled .Values.execution.namespace }}
+# Execution workloads run in a separate namespace, so the release-namespace
+# default-deny does not cover them. Deny everything first, then allow only the
+# paths an attempt needs: DNS and either the callback API or the object store.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "patchproof.fullname" . }}-execution-default-deny
+  namespace: {{ .Values.execution.namespace }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execution
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: patchproof
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "patchproof.fullname" . }}-execution-allow-dns
+  namespace: {{ .Values.execution.namespace }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execution
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: patchproof
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.namespaceSelector | nindent 12 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Direct workers and the trusted broker phases need the callback API and the
+# object store. The execute phase is excluded here and remains denied by the
+# phase=execute policy below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "patchproof.fullname" . }}-execution-allow-egress
+  namespace: {{ .Values.execution.namespace }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execution
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [patchproof-worker, patchproof-broker]
+      - key: patchproof.io/phase
+        operator: NotIn
+        values: [execute]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.api.service.port }}
+    {{- with .Values.networkPolicy.egress.api.cidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.egress.api.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.s3.cidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.egress.s3.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.otlp.cidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.egress.otlp.port }}
+    {{- end }}
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

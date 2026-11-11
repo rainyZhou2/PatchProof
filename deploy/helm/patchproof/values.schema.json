@@ -1489,6 +1489,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "api",
             "dns",
             "postgres",
             "nats",
@@ -1522,6 +1523,9 @@
               "$ref": "#/definitions/egressTarget"
             },
             "clusterAgent": {
+              "$ref": "#/definitions/egressTarget"
+            },
+            "api": {
               "$ref": "#/definitions/egressTarget"
             }
           }

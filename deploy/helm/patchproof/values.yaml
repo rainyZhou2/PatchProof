@@ -316,6 +316,11 @@ networkPolicy:
       namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: kube-system
+    # Optional extra CIDRs for an externally reachable worker callback URL.
+    # The in-cluster API service is allowed through its namespace selector.
+    api:
+      cidrs: []
+      port: 8080
     postgres:
       cidrs: ["0.0.0.0/0"]
       port: 5432

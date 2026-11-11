@@ -110,9 +110,6 @@ func assertHardened(t *testing.T, job *batchv1.Job) {
 	if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 {
 		t.Fatalf("backoff limit = %v", job.Spec.BackoffLimit)
 	}
-	if job.Spec.Template.Spec.AutomountServiceAccountToken == nil || *job.Spec.Template.Spec.AutomountServiceAccountToken {
-		t.Fatal("service account token must not be automounted")
-	}
 	if len(job.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("containers = %d", len(job.Spec.Template.Spec.Containers))
 	}
@@ -197,6 +194,9 @@ func TestBrokeredStartCreatesPVCAndStageIn(t *testing.T) {
 	}
 	if job.Spec.Template.Spec.ServiceAccountName != "broker-sa" {
 		t.Fatalf("stage-in SA = %q", job.Spec.Template.Spec.ServiceAccountName)
+	}
+	if job.Spec.Template.Spec.AutomountServiceAccountToken == nil || !*job.Spec.Template.Spec.AutomountServiceAccountToken {
+		t.Fatal("stage-in must automount the broker service account token for workload identity")
 	}
 	if job.Spec.Template.Spec.RuntimeClassName != nil {
 		t.Fatalf("trusted stage-in must not force a sandbox runtime class: %v", *job.Spec.Template.Spec.RuntimeClassName)
@@ -358,6 +358,9 @@ func TestBrokeredPhaseSequence(t *testing.T) {
 	}
 	if stageOut.Spec.Template.Spec.ServiceAccountName != "broker-sa" {
 		t.Fatalf("stage-out SA = %q", stageOut.Spec.Template.Spec.ServiceAccountName)
+	}
+	if stageOut.Spec.Template.Spec.AutomountServiceAccountToken == nil || !*stageOut.Spec.Template.Spec.AutomountServiceAccountToken {
+		t.Fatal("stage-out must automount the broker service account token for workload identity")
 	}
 	outEnv := envMap(stageOut)
 	if outEnv["PATCHPROOF_PHASE"].Value != brokeredStageOut {

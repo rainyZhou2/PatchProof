@@ -488,8 +488,11 @@ func (e *Executor) buildPhaseJob(name, namespace string, spec domain.StepSpec, l
 	pod := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: phaseLabels},
 		Spec: corev1.PodSpec{
-			RestartPolicy:                corev1.RestartPolicyNever,
-			AutomountServiceAccountToken: boolPtr(false),
+			RestartPolicy: corev1.RestartPolicyNever,
+			// The trusted broker phases must be able to use workload identity
+			// (IRSA or equivalent) to reach the object store. The untrusted
+			// execute phase never receives a service account token.
+			AutomountServiceAccountToken: boolPtr(phase != brokeredExecute),
 			NodeSelector:                 e.cfg.NodeSelector,
 			Tolerations:                  append([]corev1.Toleration(nil), e.cfg.Tolerations...),
 			EnableServiceLinks:           boolPtr(false),
