@@ -513,6 +513,18 @@ func (c Config) Validate() error {
 			return fmt.Errorf("http.externalUrl: must be an absolute URL")
 		}
 	}
+	if c.Service.Role == RoleClusterAgent {
+		if strings.TrimSpace(c.Execution.ClusterID) == "" {
+			return fmt.Errorf("execution.clusterId: required for the cluster-agent role")
+		}
+		endpoint, err := url.Parse(strings.TrimSpace(c.Execution.AgentEndpoint))
+		if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+			return fmt.Errorf("execution.agentEndpoint: an absolute URL reachable by the controller is required for the cluster-agent role")
+		}
+		if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+			return fmt.Errorf("execution.agentEndpoint: must use http or https")
+		}
+	}
 	if c.Service.Role != RoleWorker {
 		switch c.Database.Driver {
 		case "postgres":
@@ -580,6 +592,17 @@ func (c Config) Validate() error {
 	}
 	if c.Execution.MaxIsolation != "" && !isolationValid(c.Execution.MaxIsolation) {
 		return fmt.Errorf("execution.maxIsolation: unknown tier")
+	}
+	if c.Execution.DefaultIsolation != "" && c.Execution.MaxIsolation != "" {
+		defaultTier := domain.IsolationTier(c.Execution.DefaultIsolation)
+		maxTier := domain.IsolationTier(c.Execution.MaxIsolation)
+		if defaultTier.Rank() > maxTier.Rank() {
+			return fmt.Errorf("execution.defaultIsolation: %s exceeds execution.maxIsolation %s", defaultTier, maxTier)
+		}
+	}
+	if c.Auth.Mode != "dev" && (c.Service.Role == RoleController || c.Service.Role == RoleAllInOne) &&
+		c.Execution.DefaultIsolation == string(domain.IsolationTrustedLocal) {
+		return fmt.Errorf("execution.defaultIsolation: trusted-local is only allowed with dev authentication")
 	}
 	for _, tier := range c.Execution.SupportedIsolationTiers {
 		if !isolationValid(tier) {

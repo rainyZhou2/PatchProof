@@ -408,6 +408,26 @@ func TestValidateRejectsInvalidCombinations(t *testing.T) {
 			want:   "supportedIsolationTiers",
 		},
 		{
+			name: "default isolation exceeds max isolation",
+			mutate: func(cfg *Config) {
+				cfg.Execution.DefaultIsolation = "untrusted-gvisor"
+				cfg.Execution.MaxIsolation = "isolated-container"
+			},
+			want: "maxIsolation",
+		},
+		{
+			name: "oidc deployment cannot default to trusted-local",
+			mutate: func(cfg *Config) {
+				cfg.Auth.Mode = "oidc"
+				cfg.Auth.Issuer = "https://issuer.example"
+				cfg.Auth.Audience = "patchproof"
+				cfg.Auth.JWKSURL = "https://issuer.example/jwks"
+				cfg.Execution.DefaultIsolation = "trusted-local"
+				cfg.Execution.MaxIsolation = "untrusted-gvisor"
+			},
+			want: "trusted-local",
+		},
+		{
 			name:   "unknown toleration effect",
 			mutate: func(cfg *Config) { cfg.Execution.Tolerations = []Toleration{{Key: "k", Effect: "Sometimes"}} },
 			want:   "tolerations",
@@ -441,6 +461,23 @@ func TestValidateRejectsInvalidCombinations(t *testing.T) {
 			name:   "relative external url",
 			mutate: func(cfg *Config) { cfg.HTTP.ExternalURL = "/relative" },
 			want:   "http.externalUrl",
+		},
+		{
+			name: "cluster agent without cluster id",
+			mutate: func(cfg *Config) {
+				cfg.Service.Role = RoleClusterAgent
+				cfg.Execution.AgentEndpoint = "http://agent.example:8080"
+			},
+			want: "execution.clusterId",
+		},
+		{
+			name: "cluster agent without reachable endpoint",
+			mutate: func(cfg *Config) {
+				cfg.Service.Role = RoleClusterAgent
+				cfg.Execution.ClusterID = "cluster-a"
+				cfg.Execution.AgentEndpoint = ""
+			},
+			want: "execution.agentEndpoint",
 		},
 		{
 			name:   "non positive step limits",

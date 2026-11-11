@@ -20,6 +20,7 @@ type Limits struct {
 	MaxStepWallSeconds int
 	MaxRunWallSeconds  int
 	DefaultIsolation   domain.IsolationTier
+	MaxIsolation       domain.IsolationTier
 	Architecture       string
 }
 
@@ -61,10 +62,22 @@ func (p *Planner) Plan(ctx context.Context, request ports.PlanRequest) (ports.Pl
 		required[domain.NormalizeCheckName(check)] = struct{}{}
 	}
 	required["compile"] = struct{}{}
+	if _, ok := required["bounded-smt"]; ok {
+		return ports.PlanResult{}, &domain.ValidationError{
+			Field:  "policy.spec.verification.required",
+			Reason: "bounded-smt has no executable engine in this build; refusing to plan a claim that can never be verified",
+		}
+	}
 
 	isolation := request.Decision.Isolation
 	if !isolation.Valid() {
 		isolation = p.limits.DefaultIsolation
+	}
+	if p.limits.MaxIsolation.Valid() && isolation.Rank() > p.limits.MaxIsolation.Rank() {
+		return ports.PlanResult{}, &domain.ValidationError{
+			Field:  "execution.maxIsolation",
+			Reason: fmt.Sprintf("isolation %q exceeds the configured maximum %q", isolation, p.limits.MaxIsolation),
+		}
 	}
 	subjectNetwork := request.Decision.SubjectNetwork
 	if subjectNetwork == "" {
@@ -659,7 +672,9 @@ func (b *dagBuilder) addClaim(definition claimDefinition) (domain.ClaimID, error
 
 func (b *dagBuilder) inputDigest(stepKey string, options map[string]string) (string, error) {
 	return evidence.CanonicalDigest(map[string]any{
-		"run_id":        b.run.ID.String(),
+		// The input manifest describes the action, not the run that happens to
+		// execute it. Including run_id here made every action-cache key unique
+		// per run and disabled cross-run result reuse.
 		"step_key":      stepKey,
 		"base_commit":   b.run.BaseCommit,
 		"head_commit":   b.run.HeadCommit,

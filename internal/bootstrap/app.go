@@ -217,7 +217,8 @@ func (a *App) buildController(cfg config.Config, logger *slog.Logger, metrics *t
 	plannerInstance, err := planner.New(cfg.Scheduler.ShardCount, planner.Limits{
 		MaxStepCount: cfg.Limits.MaxStepCount, MaxParallelSteps: cfg.Limits.MaxParallelSteps,
 		MaxStepWallSeconds: cfg.Limits.MaxRunWallSeconds, MaxRunWallSeconds: cfg.Limits.MaxRunWallSeconds,
-		DefaultIsolation: minIsolation, Architecture: runtime.GOARCH,
+		DefaultIsolation: minIsolation, MaxIsolation: domain.IsolationTier(cfg.Execution.MaxIsolation),
+		Architecture: runtime.GOARCH,
 	})
 	if err != nil {
 		return err

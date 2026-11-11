@@ -461,27 +461,9 @@ func TestPlanBoundedSMTClaimOnly(t *testing.T) {
 	request.Policy.Spec.Verification.Required = []string{"bounded-smt"}
 	request.Decision.RequiredChecks = []string{"bounded-smt"}
 
-	result := plan(t, p, request)
-	if got := sortedStepKeys(result); !reflect.DeepEqual(got, []string{"analyze", "impact", "compile-base", "compile-head"}) {
-		t.Fatalf("steps = %v", got)
-	}
-	claim, ok := claimsByID(result)["bounded-smt"]
-	if !ok {
-		t.Fatal("bounded-smt claim missing")
-	}
-	if claim.Kind != domain.ClaimKindFix {
-		t.Fatalf("bounded-smt kind = %s", claim.Kind)
-	}
-	if claim.MinimumResult != domain.ClaimProven {
-		t.Fatalf("bounded-smt minimum = %s, want PROVEN_WITHIN_MODEL", claim.MinimumResult)
-	}
-	if claim.Required {
-		t.Error("bounded-smt claim should be optional")
-	}
-	for _, step := range result.Steps {
-		if step.Options[stepopts.ClaimID] == "bounded-smt" {
-			t.Fatalf("bounded-smt must not own a step: %s", step.Key)
-		}
+	_, err := p.Plan(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "bounded-smt") {
+		t.Fatalf("Plan error = %v, want bounded-smt rejection", err)
 	}
 }
 
@@ -624,6 +606,27 @@ func TestPlanFallsBackToDefaultIsolation(t *testing.T) {
 	}
 }
 
+func TestPlanRejectsRequiredCheckWithoutEngine(t *testing.T) {
+	p := newPlanner(t, planner.Limits{})
+	request := testRequest()
+	request.Policy.Spec.Verification.Required = []string{"compile", "bounded-smt"}
+	request.Decision.RequiredChecks = []string{"compile", "bounded-smt"}
+	_, err := p.Plan(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "bounded-smt") {
+		t.Fatalf("Plan error = %v, want bounded-smt rejection", err)
+	}
+}
+
+func TestPlanRejectsIsolationAboveMaximum(t *testing.T) {
+	p := newPlanner(t, planner.Limits{MaxIsolation: domain.IsolationContainer})
+	request := testRequest()
+	request.Decision.Isolation = domain.IsolationGVisor
+	_, err := p.Plan(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "maxIsolation") {
+		t.Fatalf("Plan error = %v, want maxIsolation rejection", err)
+	}
+}
+
 func TestPlanFuzzBudgetOptions(t *testing.T) {
 	p := newPlanner(t, planner.Limits{})
 	request := testRequest()
@@ -637,6 +640,23 @@ func TestPlanFuzzBudgetOptions(t *testing.T) {
 	}
 	if alpha.Requirements.DeadlineSeconds != 180 {
 		t.Fatalf("differential deadline = %d, want fuzz+120", alpha.Requirements.DeadlineSeconds)
+	}
+}
+
+func TestInputManifestIsStableAcrossRuns(t *testing.T) {
+	p := newPlanner(t, planner.Limits{})
+	first := plan(t, p, testRequest())
+	secondRequest := testRequest()
+	secondRequest.Run.ID = domain.NewRunID()
+	second := plan(t, p, secondRequest)
+	firstSteps := stepsByKey(t, first)
+	secondSteps := stepsByKey(t, second)
+	if firstSteps["analyze"].InputManifestDigest != secondSteps["analyze"].InputManifestDigest {
+		t.Fatalf("analyze input digest changed across runs: %s vs %s",
+			firstSteps["analyze"].InputManifestDigest, secondSteps["analyze"].InputManifestDigest)
+	}
+	if firstSteps["analyze"].InputManifestDigest == "" {
+		t.Fatal("analyze input digest is empty")
 	}
 }
 
