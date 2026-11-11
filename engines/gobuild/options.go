@@ -49,13 +49,15 @@ const (
 
 // optionsView is the validated set of step options used by the engine.
 type optionsView struct {
-	patterns []string
-	testArgs []string
-	proxy    string
-	goFlags  string
-	cgo      bool
-	target   target
-	claimID  string
+	patterns         []string
+	patternsExplicit bool
+	impactScoped     bool
+	testArgs         []string
+	proxy            string
+	goFlags          string
+	cgo              bool
+	target           target
+	claimID          string
 }
 
 // parseOptions validates all engine options. Errors are user-facing validation
@@ -69,6 +71,8 @@ func parseOptions(options map[string]string, kind domain.StepKind) (optionsView,
 	if kind == domain.StepKindRegression {
 		view.claimID = "regression"
 	}
+	view.patternsExplicit = len(stepopts.SplitList(options, "go.patterns")) > 0 ||
+		(kind == domain.StepKindRegression && strings.TrimSpace(stepopts.Get(options, stepopts.TestPattern)) != "")
 	patterns, err := parsePatterns(options, kind)
 	if err != nil {
 		return optionsView{}, err

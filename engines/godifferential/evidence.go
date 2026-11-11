@@ -216,6 +216,9 @@ func (c *config) buildEvidence(stats *statistics, elapsedMS int64, result domain
 	if c.contractFallback {
 		limits = append(limits, "contract was re-decoded from YAML through JSON so that native YAML seed arguments could be represented; contract.Document validation still applied")
 	}
+	if c.replay != nil {
+		limits = append(limits, "this run replayed a stored counterexample input instead of generating a new corpus")
+	}
 	limits = dedupeStrings(limits)
 
 	assumptions := append([]string(nil), c.contract.Spec.Assumptions...)
@@ -240,6 +243,13 @@ func (c *config) buildEvidence(stats *statistics, elapsedMS int64, result domain
 	}
 	if len(stats.nondeterminism) > 0 {
 		details["nondeterminism"] = strings.Join(stats.nondeterminism, "; ")
+	}
+	if c.replay != nil {
+		details["strategy"] = "stored-counterexample-replay"
+		details["replay"] = "true"
+		if c.replay.caseID != "" {
+			details["replay_case"] = c.replay.caseID
+		}
 	}
 	for key, value := range c.generatorSummary(stats) {
 		details[key] = value

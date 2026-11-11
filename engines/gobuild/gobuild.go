@@ -57,6 +57,10 @@ func (e *Engine) Execute(ctx context.Context, request engine.Request) (engine.Re
 	if err != nil {
 		return failedResult(domain.ErrValidationFailed, err.Error()), nil
 	}
+	view, err = applyImpactPatterns(request, view, kind)
+	if err != nil {
+		return failedResult(domain.ErrValidationFailed, err.Error()), nil
+	}
 	goBinary, err := exec.LookPath("go")
 	if err != nil {
 		return failedResult(domain.ErrSandboxUnavailable, "go toolchain is not available in PATH"), nil

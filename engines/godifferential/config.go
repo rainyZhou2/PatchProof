@@ -209,6 +209,7 @@ type config struct {
 	contractFallback bool
 	opts             options
 	oracle           oracleConfig
+	replay           *replayInput
 
 	env        harness.Environment
 	baseBinary string
@@ -272,6 +273,10 @@ func newConfig(ctx context.Context, request engine.Request) (*config, *engine.Re
 	if err != nil {
 		return nil, failure(domain.ErrEngineUnsupported, err.Error(), false, nil)
 	}
+	replay, replayFailure := loadReplayInput(request, workspace)
+	if replayFailure != nil {
+		return nil, replayFailure
+	}
 
 	environment, err := harness.NewEnvironment(ctx, workspace, opts.proxy)
 	if err != nil {
@@ -305,6 +310,7 @@ func newConfig(ctx context.Context, request engine.Request) (*config, *engine.Re
 		symbol:           symbol,
 		opts:             opts,
 		oracle:           oracle,
+		replay:           replay,
 		env:              environment,
 		baseBinary:       filepath.Join(workspace, "bin", "harness-base"),
 		headBinary:       filepath.Join(workspace, "bin", "harness-head"),

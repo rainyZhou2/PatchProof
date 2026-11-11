@@ -91,6 +91,11 @@ func executeRegression(
 		"cgo":     boolString(view.cgo),
 		"goproxy": view.proxy,
 	}
+	if view.impactScoped {
+		extra["input_scope"] = "impact"
+	} else {
+		extra["input_scope"] = "patterns"
+	}
 	claimResult := domain.ClaimTested
 	stepOutcome := domain.OutcomeSucceeded
 	var errorClass domain.ErrorClass

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/patchproof/patchproof/pkg/impact"
 )
 
 const (
@@ -20,7 +22,7 @@ const (
 	// IRSchemaVersion is the schema identifier of the ir.json artifact.
 	IRSchemaVersion = "patchproof.ir/v1"
 	// ImpactSchemaVersion is the schema identifier of the impact.json artifact.
-	ImpactSchemaVersion = "patchproof.impact/v1"
+	ImpactSchemaVersion = impact.SchemaVersion
 	// DiffSchemaVersion is the schema identifier of the diff.json artifact.
 	DiffSchemaVersion = "patchproof.diff/v1"
 
@@ -149,25 +151,10 @@ type IRBundle struct {
 }
 
 // Coverage is the resolution-coverage histogram of the analyzed call graph.
-type Coverage struct {
-	Exact   int `json:"exact"`
-	Approx  int `json:"approx"`
-	Unknown int `json:"unknown"`
-}
+type Coverage = impact.Coverage
 
 // ImpactBundle is the reverse-reachability impact artifact.
-type ImpactBundle struct {
-	SchemaVersion    string   `json:"schema_version"`
-	ChangedFiles     []string `json:"changed_files"`
-	ChangedSymbols   []string `json:"changed_symbols"`
-	AffectedSymbols  []string `json:"affected_symbols"`
-	AffectedPackages []string `json:"affected_packages"`
-	TestCandidates   []string `json:"test_candidates"`
-	Resolution       Coverage `json:"resolution"`
-	Limits           []string `json:"limits"`
-	Depth            int      `json:"depth"`
-	Truncated        bool     `json:"truncated"`
-}
+type ImpactBundle = impact.Bundle
 
 // FileDiff describes one changed file with digest, size, mode and binary
 // classification. The digest is computed from the full file contents, while

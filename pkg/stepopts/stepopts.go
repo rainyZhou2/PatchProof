@@ -32,6 +32,10 @@ const (
 	TestPattern        = "test.pattern"
 	Goproxy            = "go.proxy"
 	GoFlags            = "go.flags"
+	ReplayInput        = "replay.input"
+	ReplayCase         = "replay.case"
+	ReplayCodec        = "replay.codec"
+	InputPrefix        = "input."
 )
 
 func Get(options map[string]string, key string) string {

@@ -127,6 +127,13 @@ func (e *Engine) Execute(ctx context.Context, request engine.Request) (engine.Re
 		batchTimeout: cfg.opts.batchTimeout,
 	}
 
+	if cfg.replay != nil {
+		if failed := cfg.executeReplay(ctx, runner, stats); failed != nil {
+			return *failed, nil
+		}
+		return cfg.finishRun(ctx, started, stats, baseSource, headSource)
+	}
+
 	var pending []caseInput
 	reported := make(map[string]struct{})
 	duplicateMinimizations := 0
@@ -228,18 +235,20 @@ func (e *Engine) Execute(ctx context.Context, request engine.Request) (engine.Re
 	if err := ctx.Err(); err != nil {
 		return canceledResult(err), nil
 	}
+	return cfg.finishRun(ctx, started, stats, baseSource, headSource)
+}
 
-	if stats.generator.invalidSeeds > 0 {
-		stats.limits = append(stats.limits, fmt.Sprintf("%d contract seeds had the wrong arity and were ignored", stats.generator.invalidSeeds))
-	}
-	if stats.generator.oversize > 0 {
-		stats.limits = append(stats.limits, fmt.Sprintf("%d generated cases exceeded the 1 MiB input cap and were skipped", stats.generator.oversize))
-	}
-	if stats.generator.generationErr != nil {
-		stats.limits = append(stats.limits, stats.generator.generationErr.Error())
-	}
-	if baseSignature.Arity == 0 {
-		stats.limits = append(stats.limits, "target takes no arguments; only one observable case can be generated")
+func (cfg *config) finishRun(ctx context.Context, started time.Time, stats *statistics, baseSource, headSource []byte) (engine.Result, error) {
+	if stats.generator != nil {
+		if stats.generator.invalidSeeds > 0 {
+			stats.limits = append(stats.limits, fmt.Sprintf("%d contract seeds had the wrong arity and were ignored", stats.generator.invalidSeeds))
+		}
+		if stats.generator.oversize > 0 {
+			stats.limits = append(stats.limits, fmt.Sprintf("%d generated cases exceeded the 1 MiB input cap and were skipped", stats.generator.oversize))
+		}
+		if stats.generator.generationErr != nil {
+			stats.limits = append(stats.limits, stats.generator.generationErr.Error())
+		}
 	}
 	if len(stats.nondeterminism) > 0 {
 		for _, message := range stats.nondeterminism {
@@ -249,6 +258,9 @@ func (e *Engine) Execute(ctx context.Context, request engine.Request) (engine.Re
 
 	elapsed := time.Since(started)
 	claimResult := claimResultFor(stats, cfg.opts.minCases)
+	if cfg.replay != nil && len(stats.counterexamples) > 0 {
+		claimResult = domain.ClaimViolated
+	}
 
 	casesJSONL, omitted := buildCasesJSONL(stats.caseRecords)
 	if omitted > 0 {
@@ -280,6 +292,10 @@ func (e *Engine) Execute(ctx context.Context, request engine.Request) (engine.Re
 		evidence.Scope.Details["harness_digest_artifact"] = artifacts[2].URI()
 	}
 	digest := resultDigest(stats.counterexamples, stats.validCases, artifacts)
+	generated := 0
+	if stats.generator != nil {
+		generated = stats.generator.produced
+	}
 	return engine.Result{
 		Outcome:         domain.OutcomeSucceeded,
 		Evidence:        []domain.Evidence{evidence},
@@ -291,7 +307,7 @@ func (e *Engine) Execute(ctx context.Context, request engine.Request) (engine.Re
 			"counterexamples":          fmt.Sprintf("%d", len(stats.counterexamples)),
 			"evidence":                 string(evidence.ID),
 			"result_digest":            digest,
-			"generated_cases":          fmt.Sprintf("%d", stats.generator.produced),
+			"generated_cases":          fmt.Sprintf("%d", generated),
 			"cases_artifact":           artifacts[0].URI(),
 			"counterexamples_artifact": artifacts[1].URI(),
 			"harness_digest_artifact":  artifacts[2].URI(),
