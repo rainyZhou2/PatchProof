@@ -19,7 +19,7 @@ GO_PACKAGES := ./cmd/... ./internal/... ./pkg/... ./engines/... ./tests/... ./be
 ASSETS := README.md SECURITY.md CONTRIBUTING.md LICENSE Makefile \
 	deploy api/openapi/v1/openapi.yaml api/proto .github/workflows .golangci.yml
 
-.PHONY: help fmt fmt-check vet lint test test-race bench integration build docker generate migrate yaml-check sync-helm-migrations helm-migrations-check verify clean
+.PHONY: help fmt fmt-check vet lint test test-race bench integration live-test build docker generate migrate yaml-check sync-helm-migrations helm-migrations-check verify clean
 
 help: ## Print available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "PatchProof targets:\n\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -51,7 +51,13 @@ bench: ## Run the benchmark suite
 	$(GO) test ./benchmarks -run '^$$' -bench . -benchmem
 
 integration: ## Run PostgreSQL-backed integration tests (requires PATCHPROOF_TEST_POSTGRES_DSN)
-	PATCHPROOF_TEST_INTEGRATION=1 $(GO) test ./tests/integration/...
+	@test -n "$$PATCHPROOF_TEST_POSTGRES_DSN" || { echo "PATCHPROOF_TEST_POSTGRES_DSN is required"; exit 1; }
+	PATCHPROOF_TEST_INTEGRATION=1 $(GO) test ./tests/integration/... ./internal/adapters/storage/postgres/...
+
+live-test: integration ## Run live PostgreSQL, NATS and S3 tests
+	@test -n "$$PATCHPROOF_TEST_NATS_URL" || { echo "PATCHPROOF_TEST_NATS_URL is required"; exit 1; }
+	@test -n "$$PATCHPROOF_TEST_S3_ENDPOINT" || { echo "PATCHPROOF_TEST_S3_ENDPOINT is required"; exit 1; }
+	$(GO) test ./internal/adapters/events/nats/... ./internal/adapters/cas/s3/...
 
 build: ## Build every command into bin/
 	@mkdir -p $(BIN)
