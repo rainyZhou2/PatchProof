@@ -582,3 +582,90 @@ func TestNewValidation(t *testing.T) {
 		t.Fatalf("New with no signer: %v", err)
 	}
 }
+
+func TestDowngradePartialClaimEvidence(t *testing.T) {
+	dag := domain.DAG{Steps: []domain.Step{{
+		Status:  domain.StepFailed,
+		Options: map[string]string{"claim.id": "native-fuzz"},
+	}}}
+	verdict := domain.VerdictResult{
+		Verdict: domain.VerdictVerified,
+		Claims: []domain.ClaimAssessment{{
+			ClaimID: "native-fuzz", Required: true,
+			MinimumResult: domain.ClaimTested, Result: domain.ClaimTested,
+		}},
+	}
+	downgraded := downgradePartialClaimEvidence(dag, verdict)
+	if downgraded.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict = %s, want INCONCLUSIVE", downgraded.Verdict)
+	}
+	if downgraded.Claims[0].Result != domain.ClaimUnknown {
+		t.Fatalf("claim result = %s, want UNKNOWN", downgraded.Claims[0].Result)
+	}
+	found := false
+	for _, finding := range downgraded.Findings {
+		if finding.Code == "CLAIM_STEP_FAILED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("findings = %+v, want CLAIM_STEP_FAILED", downgraded.Findings)
+	}
+}
+
+func TestDowngradePartialClaimEvidenceLeavesCompleteClaims(t *testing.T) {
+	dag := domain.DAG{Steps: []domain.Step{{Status: domain.StepSucceeded, Options: map[string]string{"claim.id": "compile"}}}}
+	verdict := domain.VerdictResult{
+		Verdict: domain.VerdictVerified,
+		Claims: []domain.ClaimAssessment{{
+			ClaimID: "compile", Required: true,
+			MinimumResult: domain.ClaimTested, Result: domain.ClaimTested,
+		}},
+	}
+	if got := downgradePartialClaimEvidence(dag, verdict); got.Verdict != domain.VerdictVerified {
+		t.Fatalf("verdict = %s, want VERIFIED", got.Verdict)
+	}
+}
+
+func TestAggregateDeterministicFailureWithoutCounterexampleVerifies(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProofFixture(t, []domain.Claim{
+		newProofClaim(domain.Run{}, "compile", domain.ClaimKindCompile, true),
+	}, domain.StepKindCompile)
+	evidenceItem := testProofEvidence(fixture.run, "compile", domain.EvidenceCompile, domain.ClaimViolated)
+	artifact, err := fixture.cas.Put(ctx, ports.SecurityScope{
+		TenantID: fixture.tenantID, TrustDomain: "report", Region: "region-a",
+	}, strings.NewReader("go build failed: syntax error"))
+	if err != nil {
+		t.Fatalf("put failure log: %v", err)
+	}
+	evidenceItem.Artifacts = []domain.CASRef{artifact}
+	fixture.commit(t, domain.StepResult{Evidence: []domain.Evidence{evidenceItem}})
+
+	report, err := fixture.service.Aggregate(ctx, fixture.run)
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+	if report.Verdict != domain.VerdictCounterexample {
+		t.Fatalf("verdict = %s, want COUNTEREXAMPLE_FOUND", report.Verdict)
+	}
+	if len(report.Counterexamples) != 0 {
+		t.Fatalf("counterexamples = %d, want 0 for a deterministic compile failure", len(report.Counterexamples))
+	}
+
+	trust := evidence.NewTrustStore()
+	if err := trust.Add(evidence.TrustedKey{
+		KeyID: fixture.signer.KeyID(), Identity: "proof-test", PublicKey: fixture.signer.PublicKey(),
+	}); err != nil {
+		t.Fatalf("add trusted key: %v", err)
+	}
+	result, err := evidence.VerifyReport(ctx, report, fixture.source(), evidence.VerifyOptions{
+		Trust: trust, Now: proofTestNow.Add(time.Minute), Deep: true,
+	})
+	if err != nil {
+		t.Fatalf("VerifyReport: %v", err)
+	}
+	if result.Status != evidence.StatusValidIntegrity {
+		t.Fatalf("verification status = %s, want VALID_INTEGRITY (issues: %v)", result.Status, result.Issues)
+	}
+}

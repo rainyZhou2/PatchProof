@@ -91,6 +91,7 @@ func (s *Service) Aggregate(ctx context.Context, run domain.Run) (domain.Report,
 		InfrastructureFailed: infrastructureFailed,
 		Cancelled:            run.Status == domain.RunCancelled || run.Status == domain.RunCancelling,
 	})
+	verdict = downgradePartialClaimEvidence(dag, verdict)
 	if invalidCount > 0 {
 		verdict.Verdict = domain.VerdictInconclusive
 		verdict.Findings = append(verdict.Findings, domain.Finding{
@@ -302,6 +303,54 @@ func (s *Service) emitReportEvent(ctx context.Context, report domain.Report) err
 		return err
 	}
 	return s.store.AppendOutbox(ctx, []domain.OutboxEvent{event})
+}
+
+// downgradePartialClaimEvidence prevents a single successful step from
+// satisfying a claim that is shared by several steps when another step for the
+// same claim failed permanently. Compile base/head and multi-contract native
+// fuzzing use shared claims; without this guard, a partial execution could be
+// reported as VERIFIED_WITHIN_SCOPE.
+func downgradePartialClaimEvidence(dag domain.DAG, verdict domain.VerdictResult) domain.VerdictResult {
+	failed := make(map[domain.ClaimID]struct{})
+	for _, step := range dag.Steps {
+		switch step.Status {
+		case domain.StepFailed, domain.StepTimedOut, domain.StepCancelled:
+		default:
+			continue
+		}
+		claimID := domain.ClaimID(stepopts.Get(step.Options, stepopts.ClaimID))
+		if claimID != "" {
+			failed[claimID] = struct{}{}
+		}
+	}
+	if len(failed) == 0 {
+		return verdict
+	}
+	downgraded := false
+	for i := range verdict.Claims {
+		claim := &verdict.Claims[i]
+		if !claim.Required {
+			continue
+		}
+		if _, ok := failed[claim.ClaimID]; !ok {
+			continue
+		}
+		if claim.Result != domain.ClaimTested && claim.Result != domain.ClaimProven {
+			continue
+		}
+		claim.Result = domain.ClaimUnknown
+		claim.Reason = "one or more steps for this claim failed permanently without contributing evidence"
+		verdict.Findings = append(verdict.Findings, domain.Finding{
+			Code: "CLAIM_STEP_FAILED", Severity: domain.SeverityHigh, ClaimID: claim.ClaimID,
+			Summary: "claim has positive evidence from only part of its planned execution",
+			Detail:  "at least one step sharing this claim failed or timed out",
+		})
+		downgraded = true
+	}
+	if downgraded && verdict.Verdict == domain.VerdictVerified {
+		verdict.Verdict = domain.VerdictInconclusive
+	}
+	return verdict
 }
 
 func (s *Service) loadPolicy(ctx context.Context, run domain.Run) (*domain.PolicyDocument, error) {
