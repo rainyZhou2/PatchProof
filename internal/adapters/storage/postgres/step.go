@@ -10,8 +10,12 @@ import (
 
 const (
 	nonTerminalStepStatusesSQL = "('BLOCKED', 'READY', 'LEASED', 'RUNNING', 'RETRY_WAIT')"
-	capacityStepStatusesSQL    = "('READY', 'LEASED', 'RUNNING', 'RETRY_WAIT')"
-	terminalRunStatusesSQL     = "('COMPLETED', 'PARTIAL', 'INFRA_FAILED', 'CANCELLED', 'REJECTED')"
+	// Capacity accounting is about work actually occupying an executor, not
+	// queued or dependency-blocked steps. Counting READY/RETRY_WAIT here makes
+	// a tenant's own backlog consume its concurrency quota and can deadlock the
+	// scheduler once the number of queued steps reaches the limit.
+	capacityStepStatusesSQL = "('LEASED', 'RUNNING')"
+	terminalRunStatusesSQL  = "('COMPLETED', 'PARTIAL', 'INFRA_FAILED', 'CANCELLED', 'REJECTED')"
 )
 
 // ListSteps returns every step of a run ordered by creation time.

@@ -22,8 +22,11 @@ func (s *Store) CountActiveSteps(ctx context.Context, tenantID domain.TenantID) 
 		if step.TenantID != tenantID {
 			continue
 		}
+		// Only leased/running work consumes executor capacity. READY and
+		// RETRY_WAIT are queued states; counting them would let a tenant's own
+		// backlog consume its concurrency quota and deadlock scheduling.
 		switch step.Status {
-		case domain.StepReady, domain.StepLeased, domain.StepRunning, domain.StepRetryWait:
+		case domain.StepLeased, domain.StepRunning:
 			count++
 		}
 	}

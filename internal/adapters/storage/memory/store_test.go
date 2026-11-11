@@ -915,13 +915,20 @@ func TestTenantUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count active: %v", err)
 	}
-	if active != 2 {
-		t.Fatalf("expected 2 active steps, got %d", active)
+	if active != 0 {
+		t.Fatalf("expected queued READY steps not to consume capacity, got %d", active)
 	}
 
 	fuzzLease := f.lease(t, run, fuzz, 0, testNow.Add(time.Second))
+	compileLease := f.lease(t, run, compile, 0, testNow.Add(2*time.Second))
+	active, err = f.store.CountActiveSteps(ctx, run.TenantID)
+	if err != nil {
+		t.Fatalf("count active after lease: %v", err)
+	}
+	if active != 2 {
+		t.Fatalf("expected 2 leased steps, got %d", active)
+	}
 	f.commitSuccess(t, fuzzLease, testNow.Add(2*time.Second), domain.StepMetrics{CPUSeconds: 2.5})
-	compileLease := f.lease(t, run, compile, 0, testNow.Add(3*time.Second))
 	f.commitSuccess(t, compileLease, testNow.Add(4*time.Second), domain.StepMetrics{CPUSeconds: 1.5})
 
 	usage, err := f.store.TenantUsage(ctx, run.TenantID, testNow)
@@ -1506,7 +1513,7 @@ func TestCreateRunEnforcesActiveRunQuota(t *testing.T) {
 	}
 }
 
-func TestCountActiveStepsExcludesBlocked(t *testing.T) {
+func TestCountActiveStepsCountsOnlyLeasedOrRunning(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	run := f.createRun(t, domain.RunValidating, testNow, "capacity")
@@ -1517,8 +1524,15 @@ func TestCountActiveStepsExcludesBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if count != 0 {
+		t.Fatalf("queued/blocked steps = %d, want 0 capacity-consuming steps", count)
+	}
+	f.lease(t, run, root, 0, testNow.Add(time.Second))
+	if count, err = f.store.CountActiveSteps(ctx, f.tenantID); err != nil {
+		t.Fatal(err)
+	}
 	if count != 1 {
-		t.Fatalf("active steps = %d, want 1", count)
+		t.Fatalf("active steps = %d, want 1 leased step", count)
 	}
 }
 
