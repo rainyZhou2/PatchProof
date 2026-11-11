@@ -602,6 +602,13 @@ func snapshotDigest(base, head string) (string, error) {
 }
 
 func needsPartial(report domain.Report, requireAttestation bool) bool {
+	// A confirmed counterexample or a definitive policy/infra/cancel verdict is
+	// a complete conclusion. Other required checks may be NOT_RUN because a
+	// failed upstream step blocked them; that does not make the verdict partial.
+	switch report.Verdict {
+	case domain.VerdictCounterexample, domain.VerdictPolicyBlocked, domain.VerdictInfraFailed, domain.VerdictCancelled:
+		return false
+	}
 	if requireAttestation && report.Attestation != domain.AttestationSigned {
 		return true
 	}

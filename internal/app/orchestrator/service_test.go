@@ -543,6 +543,15 @@ func TestNeedsPartial(t *testing.T) {
 	if needsPartial(policyCheck, false) {
 		t.Fatal("protected-assets should be exempt from partial checks")
 	}
+
+	counterexample := base
+	counterexample.Verdict = domain.VerdictCounterexample
+	counterexample.Claims = []domain.ClaimAssessment{{ClaimID: "compile", Required: true, MinimumResult: domain.ClaimTested, Result: domain.ClaimViolated}}
+	counterexample.RequestedChecks = []string{"compile", "regression-test"}
+	counterexample.CompletedChecks = nil
+	if needsPartial(counterexample, false) {
+		t.Fatal("a confirmed counterexample must not be downgraded to PARTIAL")
+	}
 }
 
 func TestRejectionCode(t *testing.T) {
