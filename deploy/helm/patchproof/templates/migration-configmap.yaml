@@ -1,0 +1,40 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "patchproof.fullname" . }}-migrations
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  migrate.sh: |
+    #!/bin/sh
+    set -eu
+    : "${PATCHPROOF_POSTGRES_DSN:?PATCHPROOF_POSTGRES_DSN is required}"
+    psql "$PATCHPROOF_POSTGRES_DSN" -v ON_ERROR_STOP=1 -c \
+      "CREATE TABLE IF NOT EXISTS schema_migrations (version bigint PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
+    for file in /migrations/*.sql; do
+      [ -e "$file" ] || continue
+      name=$(basename "$file")
+      version=${name%%_*}
+      applied=$(psql "$PATCHPROOF_POSTGRES_DSN" -tAc "SELECT 1 FROM schema_migrations WHERE version = ${version}")
+      if [ "$applied" = "1" ]; then
+        echo "migration ${version} already applied"
+        continue
+      fi
+      echo "applying migration ${version}"
+      psql "$PATCHPROOF_POSTGRES_DSN" -v ON_ERROR_STOP=1 --single-transaction \
+        -c "SELECT pg_advisory_xact_lock(8097881575291646575)" \
+        -f "$file" \
+        -c "INSERT INTO schema_migrations (version) VALUES (${version}) ON CONFLICT DO NOTHING"
+    done
+    psql "$PATCHPROOF_POSTGRES_DSN" -v ON_ERROR_STOP=1 -c "SELECT patchproof_ensure_partitions(3)"
+  {{- range $path, $_ := .Files.Glob "files/migrations/*.sql" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+{{- end }}

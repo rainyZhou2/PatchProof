@@ -1,0 +1,34 @@
+PatchProof is installed in namespace {{ .Release.Namespace }}.
+
+API:
+{{- if contains "NodePort" .Values.api.service.type }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "patchproof.fullname" . }}-api
+{{- else if contains "LoadBalancer" .Values.api.service.type }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "patchproof.fullname" . }}-api
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "patchproof.fullname" . }}-api 8080:{{ .Values.api.service.port }}
+{{- end }}
+
+Authentication mode: {{ .Values.auth.mode }}
+{{- if eq .Values.auth.mode "dev" }}
+  Development auth is enabled. Do not expose this installation to untrusted
+  clients, and do not run untrusted patches with the default isolation tier.
+{{- end }}
+{{- if and .Values.clusterAgent.enabled (not .Values.clusterAgent.rbac.create) }}
+  The cluster agent is enabled without RBAC. Grant it permission to manage
+  Jobs, Pods, ConfigMaps and Secrets in {{ .Values.execution.namespace }}.
+{{- end }}
+
+Worker execution:
+  The control plane creates one Kubernetes Job per attempt in namespace
+  {{ .Values.execution.namespace }} with RuntimeClass "{{ .Values.execution.runtimeClass }}".
+  The chart does not deploy workers. Ensure that namespace exists, that the
+  RuntimeClass is installed on a dedicated node pool, and that the worker image
+  is pinned by digest:
+  {{ .Values.execution.workerImage.repository }}@{{ .Values.execution.workerImage.digest }}
+  The worker image must also carry a non-secret config (PATCHPROOF_CONFIG) and
+  CAS credentials; the current Kubernetes executor only injects the step spec,
+  attempt token, callback URL, cluster id and engine image.
+
+Migration hook: {{ .Values.migrations.enabled }}
+Reports signed: {{ .Values.signing.require }}

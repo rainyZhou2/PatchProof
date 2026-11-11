@@ -1,0 +1,16 @@
+apiVersion: v2
+name: patchproof
+description: Regional PatchProof control plane (API, controller, optional cluster agent)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/patchproof/patchproof
+sources:
+  - https://github.com/patchproof/patchproof
+keywords:
+  - patch-verification
+  - counterexample
+  - evidence
+annotations:
+  category: Security

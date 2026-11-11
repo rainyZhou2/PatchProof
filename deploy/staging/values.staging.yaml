@@ -1,0 +1,109 @@
+region: staging
+clusterId: staging-a
+externalUrl: https://patchproof.staging.example.org
+
+images:
+  api:
+    repository: ghcr.io/patchproof/patchproof-api
+    digest: ""
+  controller:
+    repository: ghcr.io/patchproof/patchproof-controller
+    digest: ""
+  clusterAgent:
+    repository: ghcr.io/patchproof/patchproof-cluster-agent
+    digest: ""
+
+postgres:
+  dsnSecretRef:
+    name: patchproof-postgres
+    key: dsn
+
+nats:
+  urls:
+    - nats://nats.patchproof-system.svc.cluster.local:4222
+
+cas:
+  s3:
+    endpoint: https://minio.staging.example.org
+    bucket: patchproof-staging
+    region: staging
+    forcePathStyle: true
+    secretRef:
+      name: patchproof-s3
+      accessKeyKey: access-key
+      secretKeyKey: secret-key
+
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://idp.staging.example.org
+    audience: patchproof
+    jwksUrl: https://idp.staging.example.org/.well-known/jwks.json
+  attemptTokenKeySecretRef:
+    name: patchproof-attempt-token
+    key: key
+
+signing:
+  keyId: staging-2026
+  require: true
+  keySecretRef:
+    name: patchproof-signing
+    privateKeyKey: signing.pem
+    publicKeyKey: signing.pub
+
+execution:
+  runtimeClass: gvisor
+  namespace: patchproof-execution
+  serviceAccountName: patchproof-worker
+  workerImage:
+    repository: ghcr.io/patchproof/patchproof-worker
+    digest: ""
+  brokerImage:
+    repository: ghcr.io/patchproof/patchproof-broker
+    digest: ""
+  brokerServiceAccount: patchproof-broker
+  brokeredStorageClass: standard-rwo
+  workspaceSizeGiB: 20
+  defaultIsolation: untrusted-gvisor
+  maxIsolation: untrusted-vm
+  supportedIsolationTiers: [isolated-container, untrusted-gvisor]
+  enforceTenantFloor: true
+  automountWorkerToken: true
+  allowedLanguages: [go]
+  nodeSelector:
+    pp.io/pool: untrusted-gvisor
+  tolerations:
+    - key: pp.io/untrusted
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  plugins: []
+
+scheduler:
+  shardCount: 16
+  actionCacheEnabled: true
+  actionCacheTtl: 168h
+  cacheEpoch: staging-2026-11-11
+
+clusterAgent:
+  enabled: true
+  rbac:
+    create: true
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/patchproof-staging-agent
+
+worker:
+  serviceAccount:
+    create: true
+    name: patchproof-worker
+    annotations: {}
+  brokerServiceAccount:
+    create: true
+    name: patchproof-broker
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/patchproof-staging-broker
+
+networkPolicy:
+  enabled: true

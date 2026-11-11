@@ -1,0 +1,27 @@
+# The signing key pair is supplied as a Secret with two keys:
+#   signing.pem  Ed25519 private key (PKCS#8 PEM)
+#   signing.pub  corresponding public key
+# Create it before applying this overlay; the key is never stored in git.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchproof-controller
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          env:
+            - name: PATCHPROOF_SIGNING_KEY
+              value: /etc/patchproof/signing/signing.pem
+            - name: PATCHPROOF_SIGNING_KEY_ID
+              value: production
+          volumeMounts:
+            - name: signing
+              mountPath: /etc/patchproof/signing
+              readOnly: true
+      volumes:
+        - name: signing
+          secret:
+            secretName: patchproof-signing
+            defaultMode: 288

@@ -1,0 +1,179 @@
+# ---------------------------------------------------------------------------
+# Build output and local binaries
+# ---------------------------------------------------------------------------
+/bin/
+/dist/
+/build/
+/out/
+/patchproof
+/patchproof-*
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# ---------------------------------------------------------------------------
+# Go test, coverage and profiling artifacts
+# ---------------------------------------------------------------------------
+*.out
+*.cover
+*.coverprofile
+coverage/
+coverage.html
+coverage.txt
+*.prof
+*.pprof
+*.trace
+/gocache/
+/.gocache/
+/.golangci-cache/
+/.golangci-lint-cache/
+/.staticcheck/
+
+# ---------------------------------------------------------------------------
+# Local design notes (not part of the distributable repository)
+# ---------------------------------------------------------------------------
+/PatchProof_*Architecture_Design*.md
+
+# ---------------------------------------------------------------------------
+# PatchProof local state, generated keys and reports
+# ---------------------------------------------------------------------------
+.patchproof/
+patchproof-cas/
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.crt
+*.pub
+!docs/**/*.pub
+!**/testdata/**/*.pub
+!examples/**/*.pub
+!docs/**/*.crt
+!**/testdata/**/*.crt
+!examples/**/*.crt
+
+# ---------------------------------------------------------------------------
+# Secrets and local environment
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!**/.env.example
+deploy/compose/.env
+deploy/compose/.env.*
+!deploy/compose/.env.example
+secrets/
+*.secret
+credentials.json
+service-account*.json
+kubeconfig
+*.kubeconfig
+.kube/
+
+# ---------------------------------------------------------------------------
+# Local configuration overrides
+# ---------------------------------------------------------------------------
+**/config.local.yaml
+**/config.local.yml
+**/values.local.yaml
+deploy/staging/*.local.yaml
+docker-compose.override.yml
+docker-compose.override.yaml
+compose.override.yml
+compose.override.yaml
+
+# ---------------------------------------------------------------------------
+# Helm, Kustomize and rendered deployment artifacts
+# ---------------------------------------------------------------------------
+*.tgz
+deploy/helm/*/charts/
+deploy/helm/*/rendered.yaml
+deploy/kustomize/**/rendered.yaml
+.helm/
+
+# ---------------------------------------------------------------------------
+# Editor and IDE state
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+.fleet/
+.history/
+*.iml
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ---------------------------------------------------------------------------
+# OS metadata
+# ---------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+.Spotlight-V100
+.Trashes
+
+# ---------------------------------------------------------------------------
+# Logs, temporary files and runtime state
+# ---------------------------------------------------------------------------
+*.log
+logs/
+tmp/
+temp/
+.tmp/
+*.tmp
+*.pid
+*.sock
+.dsh/
+.direnv/
+.envrc
+.envrc.local
+
+# ---------------------------------------------------------------------------
+# Node.js and frontend tooling (if a web UI is added later)
+# ---------------------------------------------------------------------------
+node_modules/
+.pnpm-store/
+.yarn/
+.next/
+.nuxt/
+.parcel-cache/
+.cache/
+web-dist/
+
+# ---------------------------------------------------------------------------
+# Python tooling (for scripts and CI helpers)
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Infrastructure and database dumps
+# ---------------------------------------------------------------------------
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.dump
+*.sql.gz
+*.sqlite
+*.sqlite3
+
+# ---------------------------------------------------------------------------
+# Go workspace files are not used by this repository
+# ---------------------------------------------------------------------------
+go.work
+go.work.sum

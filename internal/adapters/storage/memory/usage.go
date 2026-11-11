@@ -1,0 +1,70 @@
+package memory
+
+import (
+	"context"
+	"time"
+
+	"github.com/patchproof/patchproof/internal/domain"
+)
+
+// CountActiveSteps returns the number of non-terminal steps for a tenant.
+func (s *Store) CountActiveSteps(ctx context.Context, tenantID domain.TenantID) (int, error) {
+	if err := tenantID.Validate(); err != nil {
+		return 0, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.readErrLocked(); err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, step := range s.steps {
+		if step.TenantID == tenantID && step.Status.Active() {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// TenantUsage reports active run/step counts and metric sums since a timestamp.
+func (s *Store) TenantUsage(ctx context.Context, tenantID domain.TenantID, since time.Time) (domain.TenantUsage, error) {
+	if err := tenantID.Validate(); err != nil {
+		return domain.TenantUsage{}, err
+	}
+	since = since.UTC()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.readErrLocked(); err != nil {
+		return domain.TenantUsage{}, err
+	}
+	usage := domain.TenantUsage{TenantID: tenantID}
+	for _, state := range s.runs {
+		if state.run.TenantID == tenantID && state.run.Status.Active() {
+			usage.ActiveRuns++
+		}
+	}
+	for _, step := range s.steps {
+		if step.TenantID != tenantID {
+			continue
+		}
+		if step.Status.Active() {
+			usage.ActiveSteps++
+		}
+	}
+	for _, records := range s.metrics {
+		for _, record := range records {
+			if record.tenantID != tenantID {
+				continue
+			}
+			if !since.IsZero() && record.at.Before(since) {
+				continue
+			}
+			usage.DailyCPUSeconds += record.metrics.CPUSeconds
+			if record.kind == domain.StepKindDifferential {
+				usage.DailyFuzzSeconds += record.metrics.CPUSeconds
+			}
+		}
+	}
+	return usage, nil
+}

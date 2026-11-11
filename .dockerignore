@@ -1,0 +1,22 @@
+# Build context for the images in deploy/docker. Only Go sources, module
+# metadata and embedded migrations are required.
+.git
+.github
+.gitignore
+.dockerignore
+.patchproof
+bin
+dist
+coverage.txt
+coverage.html
+docs
+deploy
+api
+benchmarks
+examples
+tests
+PatchProof_*Architecture_Design*.md
+*.md
+*.tgz
+*.log
+.DS_Store

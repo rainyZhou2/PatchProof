@@ -1,0 +1,37 @@
+{{- if and (eq .Values.auth.mode "dev") (not .Values.auth.dev.enabled) }}
+{{- fail "auth.mode=dev requires auth.dev.enabled=true" }}
+{{- end }}
+{{- if and (eq .Values.auth.mode "oidc") .Values.auth.dev.enabled }}
+{{- fail "auth.dev.enabled requires auth.mode=dev" }}
+{{- end }}
+{{- if and (eq .Values.auth.mode "oidc") (or (not .Values.auth.oidc.issuer) (not .Values.auth.oidc.audience) (not .Values.auth.oidc.jwksUrl)) }}
+{{- fail "auth.mode=oidc requires auth.oidc.issuer, auth.oidc.audience and auth.oidc.jwksUrl" }}
+{{- end }}
+{{- if and .Values.signing.require (not .Values.signing.keySecretRef.name) }}
+{{- fail "signing.require=true requires signing.keySecretRef.name" }}
+{{- end }}
+{{- if and (has "untrusted-gvisor" .Values.execution.supportedIsolationTiers) (not .Values.execution.runtimeClass) }}
+{{- fail "supportedIsolationTiers containing untrusted-gvisor requires execution.runtimeClass" }}
+{{- end }}
+{{- if and (has "untrusted-vm" .Values.execution.supportedIsolationTiers) (not .Values.execution.runtimeClass) }}
+{{- fail "supportedIsolationTiers containing untrusted-vm requires execution.runtimeClass" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "patchproof.configMapName" . }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+{{ include "patchproof.config" (dict "root" . "signing" false) | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "patchproof.controllerConfigMapName" . }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+{{ include "patchproof.config" (dict "root" . "signing" true) | indent 4 }}

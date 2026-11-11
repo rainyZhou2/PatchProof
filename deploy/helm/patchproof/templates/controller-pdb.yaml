@@ -1,0 +1,15 @@
+{{- if .Values.controller.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "patchproof.fullname" . }}-controller
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  minAvailable: {{ .Values.controller.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "patchproof.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+{{- end }}

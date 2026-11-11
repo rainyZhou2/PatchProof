@@ -1,0 +1,189 @@
+name: patchproof
+
+# Integration harness only. It runs trusted control-plane binaries against a
+# local PostgreSQL, NATS JetStream and MinIO. It is not a sandbox and must not
+# be used to verify untrusted code.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: patchproof
+      POSTGRES_PASSWORD: patchproof
+      POSTGRES_DB: patchproof
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patchproof -d patchproof"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222", "-sd", "/data"]
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8222/healthz >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: patchproof
+      MINIO_ROOT_PASSWORD: patchproof-secret
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  createbuckets:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        until mc alias set local http://minio:9000 patchproof patchproof-secret; do
+          sleep 1
+        done
+        mc mb --ignore-existing local/patchproof
+        mc anonymous set none local/patchproof
+    restart: "no"
+
+  seed:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: patchproof
+      PGPASSWORD: patchproof
+      PGDATABASE: patchproof
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        until psql -c "SELECT 1 FROM tenants LIMIT 1" >/dev/null 2>&1; do
+          sleep 2
+        done
+        psql -v ON_ERROR_STOP=1 -f /seed/seed.sql
+    volumes:
+      - ./init/seed.sql:/seed/seed.sql:ro
+    restart: "no"
+
+  patchproof-api:
+    image: patchproof-api:compose
+    build:
+      context: ../..
+      dockerfile: deploy/docker/api.Dockerfile
+      args:
+        VERSION: compose
+        COMMIT: local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+    environment:
+      PATCHPROOF_CONFIG: /etc/patchproof/config.yaml
+      PATCHPROOF_ROLE: api
+      PATCHPROOF_REGION: region-a
+      PATCHPROOF_EXTERNAL_URL: http://localhost:8080
+      PATCHPROOF_POSTGRES_DSN: postgres://patchproof:patchproof@postgres:5432/patchproof?sslmode=disable
+      PATCHPROOF_NATS_URL: nats://nats:4222
+      PATCHPROOF_CAS_DRIVER: s3
+      PATCHPROOF_S3_ENDPOINT: http://minio:9000
+      PATCHPROOF_S3_REGION: us-east-1
+      PATCHPROOF_S3_BUCKET: patchproof
+      PATCHPROOF_S3_ACCESS_KEY: patchproof
+      PATCHPROOF_S3_SECRET_KEY: patchproof-secret
+      PATCHPROOF_AUTH_MODE: dev
+      PATCHPROOF_DEV_TOKEN: patchproof-dev-token
+      PATCHPROOF_DEV_TENANT_ID: 11111111-1111-4111-8111-111111111111
+      PATCHPROOF_DEV_SUBJECT: compose
+      PATCHPROOF_ATTEMPT_TOKEN_KEY: 0123456789abcdef0123456789abcdef
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "65532:65532"
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./config/patchproof.yaml:/etc/patchproof/config.yaml:ro
+    restart: unless-stopped
+
+  patchproof-controller:
+    image: patchproof-controller:compose
+    build:
+      context: ../..
+      dockerfile: deploy/docker/controller.Dockerfile
+      args:
+        VERSION: compose
+        COMMIT: local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+    environment:
+      PATCHPROOF_CONFIG: /etc/patchproof/config.yaml
+      PATCHPROOF_ROLE: controller
+      PATCHPROOF_REGION: region-a
+      PATCHPROOF_EXTERNAL_URL: http://localhost:8080
+      PATCHPROOF_POSTGRES_DSN: postgres://patchproof:patchproof@postgres:5432/patchproof?sslmode=disable
+      PATCHPROOF_NATS_URL: nats://nats:4222
+      PATCHPROOF_CAS_DRIVER: s3
+      PATCHPROOF_S3_ENDPOINT: http://minio:9000
+      PATCHPROOF_S3_REGION: us-east-1
+      PATCHPROOF_S3_BUCKET: patchproof
+      PATCHPROOF_S3_ACCESS_KEY: patchproof
+      PATCHPROOF_S3_SECRET_KEY: patchproof-secret
+      PATCHPROOF_AUTH_MODE: dev
+      PATCHPROOF_DEV_TOKEN: patchproof-dev-token
+      PATCHPROOF_DEV_TENANT_ID: 11111111-1111-4111-8111-111111111111
+      PATCHPROOF_DEV_SUBJECT: compose
+      PATCHPROOF_ATTEMPT_TOKEN_KEY: 0123456789abcdef0123456789abcdef
+    ports:
+      - "9091:9090"
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "65532:65532"
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./config/patchproof.yaml:/etc/patchproof/config.yaml:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  natsdata:
+  miniodata:

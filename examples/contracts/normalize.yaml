@@ -1,0 +1,27 @@
+apiVersion: patchproof.io/v1
+kind: Contract
+metadata:
+  name: normalize-preservation
+spec:
+  symbol: example.com/demo.Normalize
+  language: go
+  kind: behavior-preservation
+  domain:
+    description: signed 64-bit integers, including negative values
+    seed: 7
+  oracle:
+    type: json-differential/v1
+    observables: [return, panic]
+    normalize: []
+  seeds:
+    - label: positive
+      args: [5]
+    - label: negative
+      args: [-1]
+  assumptions:
+    - Normalize is a pure function
+  minimumResult: TESTED_WITHIN_SCOPE
+  required: true
+  budget:
+    maxCases: 500
+    maxDurationSeconds: 30

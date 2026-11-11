@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+if [ "${PP_SANDBOX:-0}" = "1" ]; then
+	export GOPATH="${PP_GOPATH:-/tmp/pp-gopath}"
+	export GOMODCACHE="${PP_GOMODCACHE:-/tmp/pp-gomod}"
+	export GOCACHE="${PP_GOCACHE:-/tmp/pp-gocache}"
+	export GOTOOLCHAIN="${PP_GOTOOLCHAIN:-auto}"
+fi
+
+exec go "$@"

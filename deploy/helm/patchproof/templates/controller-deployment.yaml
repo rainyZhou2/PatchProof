@@ -1,0 +1,162 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "patchproof.fullname" . }}-controller
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "patchproof.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "patchproof.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/part-of: patchproof
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.controller.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "patchproof.controllerServiceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClasses.enabled }}
+      priorityClassName: {{ .Values.priorityClasses.critical.name }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: controller
+          image: {{ include "patchproof.image" (dict "image" .Values.images.controller "name" "controller") }}
+          imagePullPolicy: {{ .Values.images.controller.pullPolicy }}
+          env:
+            - name: PATCHPROOF_CONFIG
+              value: /etc/patchproof/config.yaml
+            - name: PATCHPROOF_ROLE
+              value: controller
+            - name: PATCHPROOF_VERSION
+              value: {{ .Chart.AppVersion | quote }}
+            - name: PATCHPROOF_SHARD_COUNT
+              value: {{ .Values.scheduler.shardCount | quote }}
+            - name: PATCHPROOF_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "postgres.dsnSecretRef.name is required" .Values.postgres.dsnSecretRef.name }}
+                  key: {{ .Values.postgres.dsnSecretRef.key }}
+            - name: PATCHPROOF_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "cas.s3.secretRef.name is required" .Values.cas.s3.secretRef.name }}
+                  key: {{ .Values.cas.s3.secretRef.accessKeyKey }}
+            - name: PATCHPROOF_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "cas.s3.secretRef.name is required" .Values.cas.s3.secretRef.name }}
+                  key: {{ .Values.cas.s3.secretRef.secretKeyKey }}
+            - name: PATCHPROOF_ATTEMPT_TOKEN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.attemptTokenKeySecretRef.name is required" .Values.auth.attemptTokenKeySecretRef.name }}
+                  key: {{ .Values.auth.attemptTokenKeySecretRef.key }}
+            {{- if .Values.auth.internalTokenSecretRef.name }}
+            - name: PATCHPROOF_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.internalTokenSecretRef.name }}
+                  key: {{ .Values.auth.internalTokenSecretRef.key }}
+            {{- end }}
+            {{- if .Values.clusterAgent.enabled }}
+            - name: PATCHPROOF_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "clusterAgent.tokenSecretRef.name is required" .Values.clusterAgent.tokenSecretRef.name }}
+                  key: {{ .Values.clusterAgent.tokenSecretRef.key }}
+            {{- end }}
+            {{- if .Values.auth.dev.enabled }}
+            - name: PATCHPROOF_DEV_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.dev.tokenSecretRef.name is required" .Values.auth.dev.tokenSecretRef.name }}
+                  key: {{ .Values.auth.dev.tokenSecretRef.key }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/patchproof
+              readOnly: true
+            {{- if .Values.signing.keySecretRef.name }}
+            - name: signing
+              mountPath: /etc/patchproof/signing
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "patchproof.controllerConfigMapName" . }}
+            items:
+              - key: config.yaml
+                path: config.yaml
+        {{- if .Values.signing.keySecretRef.name }}
+        - name: signing
+          secret:
+            secretName: {{ .Values.signing.keySecretRef.name }}
+            defaultMode: 288
+            items:
+              - key: {{ .Values.signing.keySecretRef.privateKeyKey }}
+                path: {{ .Values.signing.keySecretRef.privateKeyKey }}
+              - key: {{ .Values.signing.keySecretRef.publicKeyKey }}
+                path: {{ .Values.signing.keySecretRef.publicKeyKey }}
+        {{- end }}
+      {{- if .Values.controller.affinity }}
+      affinity:
+        {{- toYaml .Values.controller.affinity | nindent 8 }}
+      {{- else }}
+      affinity:
+        {{- include "patchproof.podAntiAffinity" (dict "root" . "component" "controller") | nindent 8 }}
+      {{- end }}
+      topologySpreadConstraints:
+        {{- include "patchproof.topologySpreadConstraints" (dict "root" . "component" "controller" "constraints" .Values.controller.topologySpreadConstraints) | nindent 8 }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

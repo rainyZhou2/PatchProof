@@ -1,0 +1,40 @@
+{{- if and .Values.clusterAgent.enabled .Values.clusterAgent.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "patchproof.fullname" . }}-cluster-agent
+  namespace: {{ .Values.execution.namespace }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-agent
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "patchproof.fullname" . }}-cluster-agent
+  namespace: {{ .Values.execution.namespace }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "patchproof.fullname" . }}-cluster-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "patchproof.clusterAgentServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

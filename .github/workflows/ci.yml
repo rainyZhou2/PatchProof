@@ -1,0 +1,275 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.0"
+  CGO_ENABLED: "0"
+
+jobs:
+  go:
+    name: go (fmt, vet, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          files="$(gofmt -l cmd internal pkg engines)"
+          if [ -n "$files" ]; then
+            echo "gofmt required for:"
+            echo "$files"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: unit tests
+        run: go test ./...
+      - name: race tests
+        run: go test -race ./...
+      - name: build all commands
+        run: |
+          set -e
+          mkdir -p /tmp/patchproof-bin
+          for cmd in patchproof patchproof-api patchproof-controller patchproof-worker \
+                     patchproof-cluster-agent patchproof-server patchproof-proof patchproof-broker; do
+            go build -trimpath -buildvcs=false -o "/tmp/patchproof-bin/$cmd" "./cmd/$cmd"
+          done
+      - name: govulncheck (non-blocking)
+        continue-on-error: true
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  contracts:
+    name: contracts and deployment assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install validators
+        run: pip install --disable-pip-version-check pyyaml==6.0.2 jsonschema==4.23.0
+      - name: chart migrations are in sync
+        run: |
+          set -e
+          for file in migrations/postgres/*.sql; do
+            cmp "$file" "deploy/helm/patchproof/files/migrations/$(basename "$file")"
+          done
+      - name: validate YAML, JSON schema and OpenAPI
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+          import yaml
+          import jsonschema
+
+          yaml_files = [p for p in pathlib.Path("deploy").rglob("*")
+                        if p.suffix in {".yaml", ".yml"} and "templates" not in p.parts]
+          yaml_files += [p for p in pathlib.Path("api").rglob("*.yaml")]
+          yaml_files += [pathlib.Path(".github/workflows/ci.yml")]
+          for path in yaml_files:
+              list(yaml.safe_load_all(path.read_text()))
+          print(f"parsed {len(yaml_files)} YAML files")
+
+          schema = json.loads(pathlib.Path("deploy/helm/patchproof/values.schema.json").read_text())
+          jsonschema.Draft7Validator.check_schema(schema)
+          values = yaml.safe_load(pathlib.Path("deploy/helm/patchproof/values.yaml").read_text())
+          jsonschema.Draft7Validator(schema).validate(values)
+          print("values.schema.json is draft-07 and values.yaml conforms")
+
+          doc = yaml.safe_load(pathlib.Path("api/openapi/v1/openapi.yaml").read_text())
+          assert doc["openapi"].startswith("3.1."), doc["openapi"]
+          assert all(not p.startswith("/internal") for p in doc["paths"]), "internal paths must not be public"
+          refs = []
+          def walk(node):
+              if isinstance(node, dict):
+                  for key, value in node.items():
+                      if key == "$ref":
+                          refs.append(value)
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+          walk(doc)
+          for ref in refs:
+              assert ref.startswith("#/"), ref
+              target = doc
+              for part in ref[2:].split("/"):
+                  assert part in target, ref
+                  target = target[part]
+          expected = {
+              "/healthz", "/readyz", "/api/v1/version",
+              "/api/v1/runs", "/api/v1/runs/{run_id}", "/api/v1/runs/{run_id}/steps",
+              "/api/v1/runs/{run_id}:cancel", "/api/v1/runs/{run_id}/report",
+              "/api/v1/runs/{run_id}/evidence", "/api/v1/runs/{run_id}/counterexamples",
+              "/api/v1/reproductions", "/api/v1/projects", "/api/v1/projects/{project_id}",
+              "/api/v1/policies", "/api/v1/policies:validate", "/api/v1/clusters",
+              "/api/v1/tenants", "/api/v1/tenants/{tenant_id}",
+          }
+          assert set(doc["paths"]) == expected, set(doc["paths"]) ^ expected
+          print(f"OpenAPI 3.1 document parsed with {len(doc['paths'])} paths and {len(refs)} refs")
+          PY
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: protobuf contracts compile
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+          protoc -I api/proto --descriptor_set_out=/tmp/contract.bin \
+            api/proto/patchproof/plugin/v1/plugin.proto \
+            api/proto/patchproof/worker/v1/worker.proto
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: kustomize renders
+        run: |
+          kubectl kustomize deploy/kustomize/base > /tmp/kustomize-base.yaml
+          kubectl kustomize deploy/kustomize/overlays/production > /tmp/kustomize-production.yaml
+          python3 - <<'PY'
+          import yaml
+          for path in ("/tmp/kustomize-base.yaml", "/tmp/kustomize-production.yaml"):
+              docs = [d for d in yaml.safe_load_all(open(path)) if d]
+              assert docs, path
+              print(path, len(docs), "objects")
+          PY
+
+  helm:
+    name: helm lint and render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install yaml validator
+        run: pip install --disable-pip-version-check pyyaml==6.0.2
+      - name: lint and render chart
+        env:
+          DIGEST_A: sha256:1111111111111111111111111111111111111111111111111111111111111111
+          DIGEST_B: sha256:2222222222222222222222222222222222222222222222222222222222222222
+          DIGEST_C: sha256:3333333333333333333333333333333333333333333333333333333333333333
+          DIGEST_W: sha256:4444444444444444444444444444444444444444444444444444444444444444
+          DIGEST_M: sha256:5555555555555555555555555555555555555555555555555555555555555555
+        run: |
+          set -e
+          args=(
+            --set "auth.mode=oidc"
+            --set "auth.oidc.issuer=https://issuer.example.org"
+            --set "auth.oidc.audience=patchproof"
+            --set "auth.oidc.jwksUrl=https://issuer.example.org/.well-known/jwks.json"
+            --set "images.api.digest=$DIGEST_A"
+            --set "images.controller.digest=$DIGEST_B"
+            --set "images.clusterAgent.digest=$DIGEST_C"
+            --set "execution.workerImage.digest=$DIGEST_W"
+            --set "migrations.image.digest=$DIGEST_M"
+            --set "clusterAgent.enabled=true"
+            --set "clusterAgent.rbac.create=true"
+            --set "clusterAgent.tokenSecretRef.name=patchproof-cluster-agent"
+            --set "clusterId=ci"
+            --set "api.hpa.enabled=true"
+            --set "controller.hpa.enabled=true"
+          )
+          helm lint deploy/helm/patchproof "${args[@]}"
+          helm template patchproof deploy/helm/patchproof \
+            --namespace patchproof-system "${args[@]}" > /tmp/rendered.yaml
+          python3 - <<'PY'
+          import yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
+          assert any(d["kind"] == "Deployment" for d in docs)
+          assert any(d["kind"] == "Job" for d in docs)
+          for d in docs:
+              if d["kind"] in ("Deployment", "Job"):
+                  pod = d["spec"]["template"]["spec"]
+                  for c in pod["containers"]:
+                      sc = c["securityContext"]
+                      assert sc["runAsUser"] == 65532, d["metadata"]["name"]
+                      assert sc["readOnlyRootFilesystem"] is True, d["metadata"]["name"]
+                      assert sc["allowPrivilegeEscalation"] is False
+          print("rendered", len(docs), "objects with hardened pod security")
+          PY
+      - name: note validation limits
+        run: |
+          echo "kubectl apply --dry-run=client needs a reachable API discovery endpoint"
+          echo "on some runners; helm lint and Python YAML parsing are the required gates."
+
+  docker:
+    name: docker build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            dockerfile: deploy/docker/api.Dockerfile
+          - name: controller
+            dockerfile: deploy/docker/controller.Dockerfile
+          - name: worker
+            dockerfile: deploy/docker/worker.Dockerfile
+          - name: cluster-agent
+            dockerfile: deploy/docker/cluster-agent.Dockerfile
+          - name: proof
+            dockerfile: deploy/docker/proof.Dockerfile
+          - name: cli
+            dockerfile: deploy/docker/cli.Dockerfile
+          - name: broker
+            dockerfile: deploy/docker/broker.Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build image without pushing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: false
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+          tags: ghcr.io/patchproof/patchproof-${{ matrix.name }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  license-sbom:
+    name: dependency inventory and SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: module inventory
+        run: |
+          go list -m -json all > module-inventory.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-module-inventory
+          path: module-inventory.json
+      - uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: patchproof-source.spdx.json

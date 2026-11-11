@@ -1,0 +1,2141 @@
+openapi: 3.1.0
+info:
+  title: PatchProof API
+  version: 1.0.0
+  summary: Regional patch-verification control plane
+  description: |
+    Public API of a PatchProof regional control plane. A run freezes a base
+    commit, a head commit, a trusted policy digest and a budget, then drives a
+    step DAG and returns a verdict with evidence and counterexamples.
+
+    Scope and compatibility:
+
+    - Only `/api/v1` is public. The attempt callback endpoints under
+      `/internal/v1/attempts/{attempt_id}/...` are an internal worker protocol;
+      they are authenticated with short-lived attempt tokens and are deliberately
+      not described here.
+    - Fields are additive within `v1`. Enums may gain values in a minor release;
+      clients must tolerate unknown enum values.
+    - Every error uses `application/problem+json` with a stable `code` field.
+    - List endpoints use an opaque `next_cursor`; pass it back as `cursor`.
+      Clients must not parse or construct cursors.
+    - `POST /api/v1/runs` requires `Idempotency-Key`. Reusing a key with the same
+      frozen inputs returns the original run; reusing it with different inputs
+      returns `409 IDEMPOTENCY_CONFLICT`.
+    - The project collection is not listable in this version: project creation
+      and retrieval by id are exposed, and no `GET /api/v1/projects` route exists.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: /
+    description: Regional API endpoint; callers supply the scheme and host.
+security:
+  - bearerAuth: []
+tags:
+  - name: health
+    description: Unauthenticated liveness and readiness probes.
+  - name: runs
+    description: Verification runs, steps, reports, evidence and counterexamples.
+  - name: projects
+    description: Repository projects owned by the caller's tenant.
+  - name: policies
+    description: Trusted verification policies stored by digest.
+  - name: clusters
+    description: Execution cluster registry.
+  - name: tenants
+    description: Tenant administration.
+  - name: meta
+    description: Service version and region.
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: The API process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /readyz:
+    get:
+      tags: [health]
+      operationId: getReady
+      summary: Readiness probe
+      security: []
+      description: Checks PostgreSQL, the artifact store and the event bus.
+      responses:
+        "200":
+          description: Dependencies are reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/version:
+    get:
+      tags: [meta]
+      operationId: getVersion
+      summary: Return service version and region
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      responses:
+        "200":
+          description: Build version and region of this control plane.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionInfo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/runs:
+    post:
+      tags: [runs]
+      operationId: createRun
+      summary: Submit a verification run
+      description: |
+        Freezes the run inputs and returns `202 Accepted`. The `Location` header
+        points at the run status URL. Requires the `Idempotency-Key` header
+        (at most 200 characters).
+      x-required-roles: [operator, admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "202":
+          description: Run accepted.
+          headers:
+            Location:
+              description: Absolute or API-relative URL of the run.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [runs]
+      operationId: listRuns
+      summary: List runs for the caller's tenant
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/ProjectIdQuery"
+        - $ref: "#/components/parameters/StatusFilter"
+        - $ref: "#/components/parameters/CreatedAfter"
+        - $ref: "#/components/parameters/CreatedBefore"
+      responses:
+        "200":
+          description: A page of runs ordered by creation time descending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/v1/runs/{run_id}:
+    get:
+      tags: [runs]
+      operationId: getRun
+      summary: Get a run
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: The run and its deep links.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/runs/{run_id}/steps:
+    get:
+      tags: [runs]
+      operationId: listRunSteps
+      summary: Get the run step DAG
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Steps, dependency edges and claims of the run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/runs/{run_id}:cancel:
+    post:
+      tags: [runs]
+      operationId: cancelRun
+      summary: Cancel a run
+      description: |
+        Requests cancellation and returns the current run state. The call is
+        idempotent while the run is `CANCELLING` or `CANCELLED`; cancelling a
+        terminal run in another state returns `409`. In-flight attempts are
+        fenced by generation, so a late result cannot advance the run.
+      x-required-roles: [operator, admin]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run state after the cancellation request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/runs/{run_id}/report:
+    get:
+      tags: [runs]
+      operationId: getRunReport
+      summary: Render the signed run report
+      description: |
+        Renders the stored report. The response carries the Merkle root and
+        attestation status in headers; JSON is the full report document.
+        Markdown and SARIF are derived views of the same report.
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - name: format
+          in: query
+          required: false
+          description: Output format; defaults to `json`.
+          schema:
+            type: string
+            enum: [json, markdown, sarif]
+            default: json
+      responses:
+        "200":
+          description: Rendered report.
+          headers:
+            X-PatchProof-Merkle-Root:
+              description: Hex SHA-256 Merkle root of the evidence manifest.
+              schema:
+                type: string
+                pattern: "^[a-f0-9]{64}$"
+            X-PatchProof-Attestation:
+              description: Attestation status of the report.
+              schema:
+                $ref: "#/components/schemas/AttestationStatus"
+            Content-Disposition:
+              description: Inline filename for the rendered report.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Report"
+            text/markdown:
+              schema:
+                type: string
+            application/sarif+json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/runs/{run_id}/evidence:
+    get:
+      tags: [runs]
+      operationId: listRunEvidence
+      summary: List evidence for a run
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Evidence documents in creation order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvidenceList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/runs/{run_id}/counterexamples:
+    get:
+      tags: [runs]
+      operationId: listRunCounterexamples
+      summary: List counterexamples for a run
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Reproduced and unreproduced counterexamples.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CounterexampleList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/reproductions:
+    post:
+      tags: [runs]
+      operationId: createReproduction
+      summary: Replay a reproduced counterexample
+      description: |
+        Submits a new differential-fuzz run for a counterexample that belongs to
+        the original run and has `reproduced: true`. A known counterexample case
+        maps to a deterministic idempotency key, so repeated calls return the
+        same reproduction run.
+      x-required-roles: [operator, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReproductionRequest"
+      responses:
+        "202":
+          description: Reproduction run accepted.
+          headers:
+            Location:
+              description: URL of the reproduction run.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/v1/projects:
+    post:
+      tags: [projects]
+      operationId: createProject
+      summary: Create a project
+      x-required-roles: [admin, platform-admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Project created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/projects/{project_id}:
+    get:
+      tags: [projects]
+      operationId: getProject
+      summary: Get a project
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Project visible to the caller's tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/policies:
+    post:
+      tags: [policies]
+      operationId: putPolicy
+      summary: Store a trusted policy
+      description: |
+        Parses and validates a `patchproof.io/v1` VerificationPolicy document and
+        stores it under its content digest. `project_id` is optional for a
+        tenant-wide policy. The digest is what a run freezes.
+      x-required-roles: [admin, platform-admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyRequest"
+      responses:
+        "201":
+          description: Policy stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyStored"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/policies:validate:
+    post:
+      tags: [policies]
+      operationId: validatePolicy
+      summary: Validate a policy without storing it
+      x-required-roles: [viewer, operator, admin, platform-admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyRequest"
+      responses:
+        "200":
+          description: Policy summary derived from the document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyValidation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/clusters:
+    get:
+      tags: [clusters]
+      operationId: listClusters
+      summary: List registered execution clusters
+      x-required-roles: [admin, platform-admin]
+      parameters:
+        - name: region
+          in: query
+          required: false
+          description: Restrict the result to one region.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Clusters visible in the region.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/tenants:
+    post:
+      tags: [tenants]
+      operationId: createTenant
+      summary: Create a tenant
+      description: Platform administrators only.
+      x-required-roles: [platform-admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/tenants/{tenant_id}:
+    get:
+      tags: [tenants]
+      operationId: getTenant
+      summary: Get a tenant
+      description: |
+        A principal may read its own tenant. Reading another tenant requires
+        `platform-admin`.
+      x-required-roles: [admin, platform-admin]
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Tenant record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        OIDC JWT in `Authorization: Bearer <token>` when `auth.mode=oidc`, or the
+        configured development token when `auth.mode=dev`. Roles come from the
+        configured roles claim; tenant identity comes from the configured tenant
+        claim.
+
+  parameters:
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      description: Run UUID (version 4 or 7).
+      schema:
+        type: string
+        format: uuid
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      description: Project UUID (version 4 or 7).
+      schema:
+        type: string
+        format: uuid
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      description: Tenant UUID (version 4 or 7).
+      schema:
+        type: string
+        format: uuid
+    ProjectIdQuery:
+      name: project_id
+      in: query
+      required: false
+      description: Filter runs by project.
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated key scoped to the tenant and project. At most 200
+        characters. Reuse with identical frozen inputs to retrieve the original
+        run.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: |
+        Optional correlation id, 1-128 characters of `[A-Za-z0-9._-]`. Invalid
+        values are replaced by a generated UUID; the effective id is echoed in
+        problem documents and logs.
+      schema:
+        type: string
+        maxLength: 128
+        pattern: "^[A-Za-z0-9._-]+$"
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque `next_cursor` from a previous page.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size. The server clamps larger values to its configured cap.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 50
+    StatusFilter:
+      name: status
+      in: query
+      required: false
+      description: |
+        Run status filter. Repeat the parameter or use a comma-separated list.
+        Unknown values are rejected with `400 INVALID_STATUS`.
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          $ref: "#/components/schemas/RunStatus"
+    CreatedAfter:
+      name: created_after
+      in: query
+      required: false
+      description: Inclusive lower bound on creation time (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+    CreatedBefore:
+      name: created_before
+      in: query
+      required: false
+      description: Exclusive upper bound on creation time (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+
+  responses:
+    BadRequest:
+      description: |
+        Malformed request, failed validation, missing idempotency key or an
+        unsupported report format.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: Missing, invalid or expired bearer token.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: The principal lacks the required role or tenant scope.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: The resource does not exist or is not visible to the principal.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: |
+        State transition, idempotency, version or fencing conflict.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnprocessableEntity:
+      description: The request is well formed but cannot be processed as stated.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: Tenant request rate exceeded.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalError:
+      description: Unexpected server failure. The `request_id` is the correlation key.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: A required dependency is not ready.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem document emitted by every API error path.
+      additionalProperties: false
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          description: Usually `about:blank`.
+        title:
+          type: string
+          description: HTTP status text.
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+          description: Human-readable detail. Never contains credentials.
+        code:
+          type: string
+          description: Stable machine-readable code.
+          examples:
+            - IDEMPOTENCY_KEY_REQUIRED
+            - IDEMPOTENCY_CONFLICT
+            - INVALID_REQUEST
+            - INVALID_STATUS
+            - UNSUPPORTED_FORMAT
+            - NOT_FOUND
+            - FORBIDDEN
+            - CONFLICT
+            - STALE_GENERATION
+            - QUOTA_EXCEEDED
+            - RATE_LIMITED
+            - NOT_READY
+        request_id:
+          type: string
+          description: Correlation id also written to server logs.
+        instance:
+          type: string
+          description: Request path that produced the problem.
+
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+
+    VersionInfo:
+      type: object
+      additionalProperties: false
+      required: [version, region]
+      properties:
+        version:
+          type: string
+        region:
+          type: string
+
+    RunStatus:
+      type: string
+      enum:
+        - CREATED
+        - VALIDATING
+        - PLANNED
+        - QUEUED
+        - RUNNING
+        - AGGREGATING
+        - CANCELLING
+        - COMPLETED
+        - PARTIAL
+        - INFRA_FAILED
+        - CANCELLED
+        - REJECTED
+
+    Verdict:
+      type: string
+      enum:
+        - COUNTEREXAMPLE_FOUND
+        - VERIFIED_WITHIN_SCOPE
+        - INCONCLUSIVE
+        - POLICY_BLOCKED
+        - INFRA_FAILED
+        - CANCELLED
+
+    StepStatus:
+      type: string
+      enum:
+        - BLOCKED
+        - READY
+        - LEASED
+        - RUNNING
+        - RETRY_WAIT
+        - SUCCEEDED
+        - FAILED
+        - CANCELLED
+        - TIMED_OUT
+
+    StepKind:
+      type: string
+      enum:
+        - snapshot
+        - analyze
+        - impact-analysis
+        - compile
+        - regression-test
+        - differential-fuzz
+        - bounded-smt
+        - security-scan
+        - evidence-normalization
+        - policy-evaluation
+        - report
+
+    ErrorClass:
+      type: string
+      enum:
+        - COMPILATION_FAILED
+        - TEST_ASSERTION_FAILED
+        - COUNTEREXAMPLE_FOUND
+        - ENGINE_UNSUPPORTED
+        - SOLVER_TIMEOUT
+        - ENGINE_CRASH
+        - NODE_LOST
+        - POD_EVICTED
+        - IMAGE_PULL_FAILED
+        - CAS_5XX
+        - CAS_DIGEST_MISMATCH
+        - POLICY_TAMPERED
+        - LEASE_EXPIRED
+        - TENANT_QUOTA_EXCEEDED
+        - VALIDATION_FAILED
+        - DEPENDENCY_FAILED
+        - EXECUTOR_ERROR
+        - WORKER_LOST
+        - UPLOAD_FAILED
+        - SANDBOX_UNAVAILABLE
+        - TIMEOUT
+        - CANCELLED
+        - POLICY_BLOCKED
+        - AUTHZ_DENIED
+
+    IsolationTier:
+      type: string
+      enum:
+        - trusted-local
+        - isolated-container
+        - untrusted-gvisor
+        - untrusted-vm
+
+    NetworkMode:
+      type: string
+      enum: [none, restricted]
+
+    ArtifactTransport:
+      type: string
+      enum: [brokered-offline-io, direct]
+
+    ClaimKind:
+      type: string
+      enum:
+        - REGRESSION
+        - FIX
+        - COMPILE
+        - TEST
+        - SECURITY
+        - PROVENANCE
+
+    ClaimResult:
+      type: string
+      enum:
+        - VIOLATED
+        - PROVEN_WITHIN_MODEL
+        - TESTED_WITHIN_SCOPE
+        - UNKNOWN
+        - NOT_RUN
+        - INVALID_EVIDENCE
+
+    EvidenceKind:
+      type: string
+      enum:
+        - COMPILE
+        - STATIC_ANALYSIS
+        - DIFFERENTIAL_TEST
+        - REGRESSION_TEST
+        - FUZZ
+        - SMT
+        - POLICY
+        - COVERAGE
+        - ENGINE_CRASH
+        - PROVENANCE
+
+    AttestationStatus:
+      type: string
+      enum:
+        - PENDING_ATTESTATION
+        - SIGNED
+        - FAILED
+
+    SecurityTier:
+      type: string
+      enum: [standard, elevated, regulated]
+
+    TenantStatus:
+      type: string
+      enum: [ACTIVE, MIGRATING, SUSPENDED, DELETING]
+
+    Severity:
+      type: string
+      enum: [CRITICAL, HIGH, MEDIUM, LOW, INFO]
+
+    PolicySource:
+      type: string
+      enum: [ADMIN, BASE_BRANCH, REQUEST]
+
+    Budget:
+      type: object
+      additionalProperties: false
+      properties:
+        cpu_seconds:
+          type: number
+          minimum: 0
+        wall_seconds:
+          type: integer
+          minimum: 0
+          description: Zero means the policy default; otherwise at least 30.
+        fuzz_cpu_seconds:
+          type: number
+          minimum: 0
+        max_parallel_steps:
+          type: integer
+          minimum: 0
+
+    CreateRunRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, base_commit, head_commit]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        base_commit:
+          type: string
+          pattern: "^[0-9a-fA-F]{7,64}$"
+          description: Base revision, 7-64 hexadecimal characters.
+        head_commit:
+          type: string
+          pattern: "^[0-9a-fA-F]{7,64}$"
+          description: Head revision; must differ from the base.
+        patch_digest:
+          type: string
+          description: Optional caller-supplied patch digest recorded on the run.
+        policy_ref:
+          type: string
+          description: Human-readable policy reference. Either this or `policy_digest` is required.
+        policy_digest:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+          description: Exact policy digest to freeze.
+        requested_checks:
+          type: array
+          description: |
+            Check names understood by the policy engine. Unknown names are
+            rejected during planning. Duplicates are removed.
+          items:
+            type: string
+        budget:
+          $ref: "#/components/schemas/Budget"
+        region:
+          type: string
+          description: Requested region; defaults to the tenant home region.
+      anyOf:
+        - required: [policy_ref]
+        - required: [policy_digest]
+
+    Run:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - tenant_id
+        - project_id
+        - request_key
+        - fingerprint
+        - base_commit
+        - head_commit
+        - patch_digest
+        - policy_ref
+        - policy_digest
+        - requested_checks
+        - budget
+        - status
+        - state_version
+        - region
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        request_key:
+          type: string
+          maxLength: 200
+        fingerprint:
+          type: string
+          description: Digest of the frozen run inputs used for idempotency.
+        base_commit:
+          type: string
+        head_commit:
+          type: string
+        patch_digest:
+          type: string
+        snapshot_digest:
+          type: string
+        base_snapshot_digest:
+          type: string
+        head_snapshot_digest:
+          type: string
+        policy_digest:
+          type: string
+        policy_ref:
+          type: string
+        requested_checks:
+          type: array
+          items:
+            type: string
+        budget:
+          $ref: "#/components/schemas/Budget"
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        verdict:
+          $ref: "#/components/schemas/Verdict"
+        state_version:
+          type: integer
+          format: int64
+          minimum: 0
+        failure_class:
+          $ref: "#/components/schemas/ErrorClass"
+        failure_message:
+          type: string
+        region:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        planned_at:
+          type: [string, "null"]
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+
+    RunResponse:
+      type: object
+      additionalProperties: false
+      required: [run, status_url, report_url]
+      properties:
+        run:
+          $ref: "#/components/schemas/Run"
+        status_url:
+          type: string
+          description: Run status URL.
+        report_url:
+          type: string
+          description: Report URL.
+
+    RunList:
+      type: object
+      additionalProperties: false
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Run"
+        next_cursor:
+          type: string
+          description: Opaque cursor for the next page; absent on the last page.
+
+    ResourceRequirements:
+      type: object
+      additionalProperties: false
+      required:
+        - architecture
+        - isolation
+        - cpu_milli
+        - memory_mib
+        - ephemeral_disk_gib
+        - network
+        - deadline_seconds
+        - preemptible
+        - gpu_count
+      properties:
+        region:
+          type: string
+        architecture:
+          type: string
+        language:
+          type: string
+        engine:
+          type: string
+        isolation:
+          $ref: "#/components/schemas/IsolationTier"
+        cpu_milli:
+          type: integer
+          format: int64
+          minimum: 1
+        memory_mib:
+          type: integer
+          format: int64
+          minimum: 1
+        ephemeral_disk_gib:
+          type: integer
+          format: int64
+          minimum: 0
+        network:
+          $ref: "#/components/schemas/NetworkMode"
+        subject_network:
+          anyOf:
+            - $ref: "#/components/schemas/NetworkMode"
+            - const: ""
+        deadline_seconds:
+          type: integer
+          minimum: 1
+        preemptible:
+          type: boolean
+        gpu_count:
+          type: integer
+          minimum: 0
+        runtime_class:
+          type: string
+        artifact_transport:
+          anyOf:
+            - $ref: "#/components/schemas/ArtifactTransport"
+            - const: ""
+        image_digest:
+          type: string
+        required_features:
+          type: array
+          items:
+            type: string
+
+    Step:
+      type: object
+      additionalProperties: false
+      required:
+        - step_id
+        - run_id
+        - tenant_id
+        - key
+        - kind
+        - status
+        - generation
+        - attempt_count
+        - max_attempts
+        - requirements
+        - input_manifest_digest
+        - priority
+        - shard
+        - created_at
+        - updated_at
+      properties:
+        step_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        key:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9:._-]{0,127}$"
+        kind:
+          $ref: "#/components/schemas/StepKind"
+        status:
+          $ref: "#/components/schemas/StepStatus"
+        generation:
+          type: integer
+          format: int64
+          minimum: 0
+        attempt_count:
+          type: integer
+          minimum: 0
+        max_attempts:
+          type: integer
+          minimum: 1
+          maximum: 20
+        current_attempt_id:
+          type: string
+          format: uuid
+        lease_owner:
+          type: string
+        lease_deadline:
+          type: [string, "null"]
+          format: date-time
+        target_cluster:
+          type: string
+        requirements:
+          $ref: "#/components/schemas/ResourceRequirements"
+        input_manifest_digest:
+          type: string
+        result_digest:
+          type: string
+        output_manifest:
+          type: string
+        failure_class:
+          $ref: "#/components/schemas/ErrorClass"
+        failure_message:
+          type: string
+        next_attempt_at:
+          type: [string, "null"]
+          format: date-time
+        priority:
+          type: integer
+        shard:
+          type: integer
+          minimum: 0
+        options:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+
+    Claim:
+      type: object
+      additionalProperties: false
+      required:
+        - claim_id
+        - run_id
+        - tenant_id
+        - contract_id
+        - kind
+        - title
+        - predicate
+        - domain
+        - observable
+        - language
+        - required
+        - minimum_result
+        - created_at
+      properties:
+        claim_id:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$"
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        contract_id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/ClaimKind"
+        title:
+          type: string
+        predicate:
+          type: string
+        domain:
+          type: string
+        assumptions:
+          type: array
+          items:
+            type: string
+        observable:
+          type: string
+        oracle_ref:
+          type: string
+        input_schema:
+          type: string
+        language:
+          type: string
+        symbol:
+          type: string
+        required:
+          type: boolean
+        minimum_result:
+          $ref: "#/components/schemas/ClaimResult"
+        created_at:
+          type: string
+          format: date-time
+
+    StepsResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, steps, dependencies, claims]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/Step"
+        dependencies:
+          type: object
+          description: Step id to the ids of steps that must finish first.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+              format: uuid
+        claims:
+          type: array
+          items:
+            $ref: "#/components/schemas/Claim"
+
+    CASRef:
+      type: object
+      additionalProperties: false
+      required: [algorithm, digest, size_bytes]
+      properties:
+        algorithm:
+          type: string
+          enum: [sha256]
+        digest:
+          type: string
+          pattern: "^(sha256:)?[a-f0-9]{64}$"
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        tenant_scope:
+          type: string
+
+    EngineInfo:
+      type: object
+      additionalProperties: false
+      required: [name, version]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        image_digest:
+          type: string
+        protocol:
+          type: string
+
+    EnvironmentInfo:
+      type: object
+      additionalProperties: false
+      required: [arch, sandbox_profile]
+      properties:
+        arch:
+          type: string
+        sandbox_profile:
+          type: string
+        toolchain_digest:
+          type: string
+        os:
+          type: string
+        region:
+          type: string
+        extra:
+          type: object
+          additionalProperties:
+            type: string
+
+    EvidenceScope:
+      type: object
+      additionalProperties: false
+      required: [input_domain]
+      properties:
+        input_domain:
+          type: string
+        seed_count:
+          type: integer
+          format: int64
+        generated_cases:
+          type: integer
+          format: int64
+        elapsed_ms:
+          type: integer
+          format: int64
+        budget:
+          type: string
+        details:
+          type: object
+          additionalProperties:
+            type: string
+
+    Evidence:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - evidence_id
+        - tenant_id
+        - run_id
+        - claim_id
+        - kind
+        - result
+        - scope
+        - engine
+        - environment
+        - created_at
+      properties:
+        schema_version:
+          type: string
+          const: patchproof.evidence/v1
+        evidence_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        step_id:
+          type: string
+          format: uuid
+        claim_id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/EvidenceKind"
+        result:
+          $ref: "#/components/schemas/ClaimResult"
+        scope:
+          $ref: "#/components/schemas/EvidenceScope"
+        assumptions:
+          type: array
+          items:
+            type: string
+        engine:
+          $ref: "#/components/schemas/EngineInfo"
+        environment:
+          $ref: "#/components/schemas/EnvironmentInfo"
+        inputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/CASRef"
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/CASRef"
+        limits:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+
+    EvidenceList:
+      type: object
+      additionalProperties: false
+      required: [run_id, evidence]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/Evidence"
+
+    Counterexample:
+      type: object
+      additionalProperties: false
+      required:
+        - case_id
+        - tenant_id
+        - run_id
+        - claim_id
+        - input_codec
+        - input_ref
+        - base_observation_ref
+        - head_observation_ref
+        - reproduced
+        - scope
+        - minimized
+        - created_at
+      properties:
+        case_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        claim_id:
+          type: string
+        input_codec:
+          type: string
+        input_ref:
+          $ref: "#/components/schemas/CASRef"
+        base_observation_ref:
+          $ref: "#/components/schemas/CASRef"
+        head_observation_ref:
+          $ref: "#/components/schemas/CASRef"
+        reproducer_image_digest:
+          type: string
+        reproduced:
+          type: boolean
+        scope:
+          type: string
+        nondeterminism:
+          type: array
+          items:
+            type: string
+        minimized:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    CounterexampleList:
+      type: object
+      additionalProperties: false
+      required: [run_id, counterexamples]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        counterexamples:
+          type: array
+          items:
+            $ref: "#/components/schemas/Counterexample"
+
+    ClaimAssessment:
+      type: object
+      additionalProperties: false
+      required: [claim_id, kind, title, required, minimum_result, result]
+      properties:
+        claim_id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/ClaimKind"
+        title:
+          type: string
+        required:
+          type: boolean
+        minimum_result:
+          $ref: "#/components/schemas/ClaimResult"
+        result:
+          $ref: "#/components/schemas/ClaimResult"
+        evidence_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        scope:
+          type: string
+        reason:
+          type: string
+
+    Finding:
+      type: object
+      additionalProperties: false
+      required: [code, severity, summary]
+      properties:
+        code:
+          type: string
+        severity:
+          $ref: "#/components/schemas/Severity"
+        claim_id:
+          type: string
+        summary:
+          type: string
+        detail:
+          type: string
+        evidence_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    RunMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - cpu_seconds
+        - memory_gib_seconds
+        - cas_written_bytes
+        - egress_bytes
+        - wall_seconds
+        - step_count
+        - retry_count
+      properties:
+        cpu_seconds:
+          type: number
+        memory_gib_seconds:
+          type: number
+        cas_written_bytes:
+          type: integer
+          format: int64
+        egress_bytes:
+          type: integer
+          format: int64
+        wall_seconds:
+          type: integer
+          format: int64
+        step_count:
+          type: integer
+        retry_count:
+          type: integer
+
+    Provenance:
+      type: object
+      additionalProperties: false
+      required: [region, orchestrator_version]
+      properties:
+        region:
+          type: string
+        orchestrator_version:
+          type: string
+        toolchain_digest:
+          type: string
+        engine_versions:
+          type: object
+          additionalProperties:
+            type: string
+        source_repository:
+          type: string
+        created_by:
+          type: string
+        policy_source:
+          $ref: "#/components/schemas/PolicySource"
+        executed_image:
+          type: string
+
+    Signature:
+      type: object
+      additionalProperties: false
+      required: [signature_id, key_id, algorithm, subject, signature, signed_at]
+      properties:
+        signature_id:
+          type: string
+          format: uuid
+        key_id:
+          type: string
+        algorithm:
+          type: string
+        subject:
+          type: string
+        signature:
+          type: string
+          format: byte
+          description: Base64-encoded signature bytes.
+        signed_at:
+          type: string
+          format: date-time
+        certificate:
+          type: string
+        transparency_log:
+          type: string
+
+    Report:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - report_id
+        - run_id
+        - tenant_id
+        - project_id
+        - verdict
+        - base_commit
+        - head_commit
+        - snapshot_digest
+        - policy_digest
+        - requested_checks
+        - completed_checks
+        - claims
+        - metrics
+        - provenance
+        - manifest
+        - merkle_root
+        - attestation_status
+        - generated_at
+      properties:
+        schema_version:
+          type: string
+          const: patchproof.report/v1
+        report_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        verdict:
+          $ref: "#/components/schemas/Verdict"
+        base_commit:
+          type: string
+        head_commit:
+          type: string
+        snapshot_digest:
+          type: string
+        base_snapshot_digest:
+          type: string
+        head_snapshot_digest:
+          type: string
+        policy_digest:
+          type: string
+        requested_checks:
+          type: array
+          items:
+            type: string
+        completed_checks:
+          type: array
+          items:
+            type: string
+        claims:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClaimAssessment"
+        counterexamples:
+          type: array
+          items:
+            $ref: "#/components/schemas/Counterexample"
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Finding"
+        assumptions:
+          type: array
+          items:
+            type: string
+        limitations:
+          type: array
+          items:
+            type: string
+        metrics:
+          $ref: "#/components/schemas/RunMetrics"
+        provenance:
+          $ref: "#/components/schemas/Provenance"
+        manifest:
+          $ref: "#/components/schemas/CASRef"
+        merkle_root:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        signatures:
+          type: array
+          items:
+            $ref: "#/components/schemas/Signature"
+        attestation_status:
+          $ref: "#/components/schemas/AttestationStatus"
+        generated_at:
+          type: string
+          format: date-time
+
+    ReproductionRequest:
+      type: object
+      additionalProperties: false
+      required: [run_id, case_id]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        case_id:
+          type: string
+
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, repository_uri]
+      properties:
+        provider:
+          type: string
+          description: Repository provider name, for example `git`.
+        repository_uri:
+          type: string
+          format: uri
+        default_branch:
+          type: string
+        default_policy_digest:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+        allowed_regions:
+          type: array
+          items:
+            type: string
+        classification:
+          type: string
+          description: Free-form project classification used by policy. `trusted-local` permits file repositories.
+
+    Project:
+      type: object
+      additionalProperties: false
+      required:
+        - project_id
+        - tenant_id
+        - provider
+        - repository_uri
+        - default_branch
+        - default_policy_digest
+        - allowed_regions
+        - classification
+        - created_at
+        - updated_at
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+        repository_uri:
+          type: string
+          format: uri
+        default_branch:
+          type: string
+        default_policy_digest:
+          type: string
+        allowed_regions:
+          type: array
+          items:
+            type: string
+        classification:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [document]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+          description: Optional project scope; omit for a tenant-wide policy.
+        document:
+          type: string
+          description: Raw `patchproof.io/v1` VerificationPolicy YAML.
+
+    PolicyStored:
+      type: object
+      additionalProperties: false
+      required: [digest, version, created_at]
+      properties:
+        digest:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+        version:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    PolicyValidation:
+      type: object
+      additionalProperties: false
+      required:
+        - digest
+        - name
+        - required_checks
+        - optional_checks
+        - contracts
+        - isolation_tier
+        - subject_network
+      properties:
+        digest:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+        name:
+          type: string
+        required_checks:
+          type: array
+          items:
+            type: string
+        optional_checks:
+          type: array
+          items:
+            type: string
+        contracts:
+          type: integer
+          minimum: 0
+        isolation_tier:
+          type: string
+          description: Policy isolation tier; empty when the document omits it.
+        subject_network:
+          type: string
+          description: Policy subject network mode; empty when the document omits it.
+
+    Cluster:
+      type: object
+      additionalProperties: false
+      required:
+        - cluster_id
+        - region
+        - executor_kind
+        - architectures
+        - languages
+        - engines
+        - isolation_tiers
+        - runtime_classes
+        - available_cpu_milli
+        - available_memory_mib
+        - queue_depth
+        - active_attempts
+        - max_concurrent_steps
+        - cost_tier
+        - cas_region
+        - healthy
+        - maintenance
+        - version
+        - last_heartbeat
+      properties:
+        cluster_id:
+          type: string
+        region:
+          type: string
+        availability_zone:
+          type: string
+        executor_kind:
+          type: string
+          enum: [local, kubernetes, remote]
+        endpoint:
+          type: string
+        namespace:
+          type: string
+        architectures:
+          type: array
+          items:
+            type: string
+        languages:
+          type: array
+          items:
+            type: string
+        engines:
+          type: array
+          items:
+            type: string
+        isolation_tiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/IsolationTier"
+        runtime_classes:
+          type: array
+          items:
+            type: string
+        available_cpu_milli:
+          type: integer
+          format: int64
+        available_memory_mib:
+          type: integer
+          format: int64
+        queue_depth:
+          type: integer
+        active_attempts:
+          type: integer
+        max_concurrent_steps:
+          type: integer
+        cost_tier:
+          type: integer
+        cas_region:
+          type: string
+        healthy:
+          type: boolean
+        maintenance:
+          type: boolean
+        version:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        last_heartbeat:
+          type: string
+          format: date-time
+
+    ClusterList:
+      type: object
+      additionalProperties: false
+      required: [clusters]
+      properties:
+        clusters:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cluster"
+
+    TenantQuota:
+      type: object
+      additionalProperties: false
+      properties:
+        max_concurrent_runs:
+          type: integer
+          minimum: 0
+        max_concurrent_steps:
+          type: integer
+          minimum: 0
+        cpu_core_seconds_per_day:
+          type: number
+          minimum: 0
+        fuzz_seconds_per_day:
+          type: number
+          minimum: 0
+        storage_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        api_rps:
+          type: integer
+          minimum: 0
+
+    CreateTenantRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        home_region:
+          type: string
+          description: Defaults to the region of the control plane.
+        security_tier:
+          $ref: "#/components/schemas/SecurityTier"
+        display_name:
+          type: string
+        quota:
+          $ref: "#/components/schemas/TenantQuota"
+
+    Tenant:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - home_region
+        - security_tier
+        - status
+        - active_writer_epoch
+        - quota
+        - display_name
+        - created_at
+        - updated_at
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        home_region:
+          type: string
+        security_tier:
+          $ref: "#/components/schemas/SecurityTier"
+        status:
+          $ref: "#/components/schemas/TenantStatus"
+        active_writer_epoch:
+          type: integer
+          format: int64
+          minimum: 0
+        quota:
+          $ref: "#/components/schemas/TenantQuota"
+        display_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time

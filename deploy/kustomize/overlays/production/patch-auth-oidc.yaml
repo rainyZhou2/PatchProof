@@ -1,0 +1,76 @@
+# OIDC settings and the public URL are installation inputs, not secrets. Create
+# the referenced ConfigMaps before applying this overlay:
+#   kubectl -n patchproof-system create configmap patchproof-oidc \
+#     --from-literal=issuer=https://issuer.example.org \
+#     --from-literal=audience=patchproof \
+#     --from-literal=jwks-url=https://issuer.example.org/.well-known/jwks.json
+#   kubectl -n patchproof-system create configmap patchproof-site \
+#     --from-literal=external-url=https://patchproof.example.org \
+#     --from-literal=worker-image=ghcr.io/patchproof/patchproof-worker@sha256:<digest>
+# The example values above are inputs the operator supplies; they are not
+# rendered by this repository.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchproof-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: PATCHPROOF_AUTH_MODE
+              value: oidc
+            - name: PATCHPROOF_OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-oidc
+                  key: issuer
+            - name: PATCHPROOF_OIDC_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-oidc
+                  key: audience
+            - name: PATCHPROOF_OIDC_JWKS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-oidc
+                  key: jwks-url
+            - name: PATCHPROOF_EXTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-site
+                  key: external-url
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchproof-controller
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          env:
+            - name: PATCHPROOF_AUTH_MODE
+              value: oidc
+            - name: PATCHPROOF_OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-oidc
+                  key: issuer
+            - name: PATCHPROOF_OIDC_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-oidc
+                  key: audience
+            - name: PATCHPROOF_OIDC_JWKS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-oidc
+                  key: jwks-url
+            - name: PATCHPROOF_EXTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-site
+                  key: external-url

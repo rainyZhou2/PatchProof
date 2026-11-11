@@ -1,0 +1,92 @@
+service:
+  name: patchproof
+  region: region-a
+  version: compose
+http:
+  listenAddr: ":8080"
+  externalUrl: http://localhost:8080
+  readHeaderTimeout: 5s
+  readTimeout: 30s
+  writeTimeout: 60s
+  idleTimeout: 120s
+  shutdownTimeout: 20s
+  maxBodyBytes: 2097152
+database:
+  driver: postgres
+  maxConns: 20
+  minConns: 2
+  maxConnLifetime: 1h
+  maxConnIdleTime: 15m
+  statementTimeout: 30s
+  migrateOnStart: true
+events:
+  driver: nats
+  urls:
+    - nats://nats:4222
+  stream: PATCHPROOF
+  consumerPrefix: patchproof
+  maxAckPending: 512
+  batchSize: 64
+  ackWait: 30s
+  outboxInterval: 500ms
+  outboxBatch: 128
+artifacts:
+  driver: s3
+  endpoint: http://minio:9000
+  region: us-east-1
+  bucket: patchproof
+  forcePathStyle: true
+  presignTtl: 10m
+auth:
+  mode: dev
+  devTenantId: 11111111-1111-4111-8111-111111111111
+  devSubject: compose
+  devRoles:
+    - admin
+    - operator
+    - viewer
+    - platform-admin
+  attemptTokenTtl: 30m
+execution:
+  defaultIsolation: isolated-container
+  maxIsolation: untrusted-gvisor
+  allowedLanguages: [go]
+  runtimeClass: ""
+  workerImage: patchproof-worker:compose
+  enforceTenantFloor: true
+  allowFileRepositories: false
+  allowFullFetch: false
+  automountWorkerToken: false
+  supportedIsolationTiers: [isolated-container]
+  namespace: patchproof-execution
+  serviceAccount: patchproof-worker
+  jobTtl: 30m
+  jobBackoffLimit: 0
+  activeDeadline: 20m
+  maxConcurrent: 8
+scheduler:
+  shardCount: 4
+  leaseTtl: 45s
+  pollInterval: 500ms
+  batchSize: 16
+  maxStepsPerTenant: 32
+  maxStepsPerCluster: 16
+  placement: score
+telemetry:
+  logLevel: info
+  logFormat: json
+  metricsAddr: ":9090"
+  sampleRatio: 1
+  serviceNamespace: patchproof
+limits:
+  maxRepositoryBytes: 2147483648
+  maxChangedFiles: 2000
+  maxStepCount: 64
+  maxRunWallSeconds: 3600
+  defaultWallSeconds: 900
+  defaultCpuSeconds: 1200
+  defaultFuzzCpuSeconds: 600
+  maxParallelSteps: 16
+  apiRpsPerTenant: 20
+state:
+  driver: postgres

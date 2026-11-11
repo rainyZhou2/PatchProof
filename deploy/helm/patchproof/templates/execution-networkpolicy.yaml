@@ -1,0 +1,17 @@
+{{- if and .Values.networkPolicy.enabled .Values.execution.namespace }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "patchproof.fullname" . }}-execute-offline
+  namespace: {{ .Values.execution.namespace }}
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execution
+spec:
+  podSelector:
+    matchLabels:
+      patchproof.io/phase: execute
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+{{- end }}

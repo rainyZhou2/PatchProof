@@ -1,0 +1,283 @@
+// Worker attempt contract.
+//
+// This contract mirrors the current attempt API under /internal/v1/attempts and
+// the StepSpec/StepResult documents exchanged with workers. Generated bindings
+// are not checked in; the current worker talks HTTP. A gRPC implementation of
+// this service would preserve the same fencing semantics.
+//
+// Results are accepted only when attempt_id and generation match the current
+// step generation and the attempt still holds the lease. A late completion from
+// an expired generation must be rejected; retrying a step is a new attempt with
+// a higher generation.
+syntax = "proto3";
+
+package patchproof.worker.v1;
+
+option go_package = "github.com/patchproof/patchproof/api/proto/gen/patchproof/worker/v1;workerv1";
+
+message CasRef {
+  string algorithm = 1;
+  string digest = 2;
+  int64 size_bytes = 3;
+  string tenant_scope = 4;
+}
+
+message InputBinding {
+  CasRef ref = 1;
+  string kind = 2;
+  string path = 3;
+}
+
+message ResourceRequirements {
+  string region = 1;
+  string architecture = 2;
+  string language = 3;
+  string engine = 4;
+  // trusted-local, isolated-container, untrusted-gvisor or untrusted-vm.
+  string isolation = 5;
+  int64 cpu_milli = 6;
+  int64 memory_mib = 7;
+  int64 ephemeral_disk_gib = 8;
+  // none or restricted.
+  string network = 9;
+  string subject_network = 10;
+  int32 deadline_seconds = 11;
+  bool preemptible = 12;
+  int32 gpu_count = 13;
+  string runtime_class = 14;
+  // brokered-offline-io or direct.
+  string artifact_transport = 15;
+  string image_digest = 16;
+  repeated string required_features = 17;
+}
+
+message StepSpec {
+  string run_id = 1;
+  string step_id = 2;
+  string attempt_id = 3;
+  string tenant_id = 4;
+  int64 generation = 5;
+  string kind = 6;
+  string language = 7;
+  string engine = 8;
+  string policy_digest = 9;
+  string input_manifest_digest = 10;
+  repeated CasRef inputs = 11;
+  map<string, InputBinding> named_inputs = 12;
+  ResourceRequirements requirements = 13;
+  map<string, string> options = 14;
+  int64 deadline_unix_ms = 15;
+  string workspace_digest = 16;
+}
+
+enum StepOutcome {
+  STEP_OUTCOME_UNSPECIFIED = 0;
+  STEP_OUTCOME_SUCCEEDED = 1;
+  STEP_OUTCOME_FAILED = 2;
+  STEP_OUTCOME_RETRYABLE = 3;
+  STEP_OUTCOME_CANCELLED = 4;
+  STEP_OUTCOME_TIMED_OUT = 5;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_COMPILATION_FAILED = 1;
+  ERROR_CODE_TEST_ASSERTION_FAILED = 2;
+  ERROR_CODE_COUNTEREXAMPLE_FOUND = 3;
+  ERROR_CODE_ENGINE_UNSUPPORTED = 4;
+  ERROR_CODE_SOLVER_TIMEOUT = 5;
+  ERROR_CODE_ENGINE_CRASH = 6;
+  ERROR_CODE_NODE_LOST = 7;
+  ERROR_CODE_POD_EVICTED = 8;
+  ERROR_CODE_IMAGE_PULL_FAILED = 9;
+  ERROR_CODE_CAS_5XX = 10;
+  ERROR_CODE_CAS_DIGEST_MISMATCH = 11;
+  ERROR_CODE_POLICY_TAMPERED = 12;
+  ERROR_CODE_LEASE_EXPIRED = 13;
+  ERROR_CODE_TENANT_QUOTA_EXCEEDED = 14;
+  ERROR_CODE_VALIDATION_FAILED = 15;
+  ERROR_CODE_DEPENDENCY_FAILED = 16;
+  ERROR_CODE_EXECUTOR_ERROR = 17;
+  ERROR_CODE_WORKER_LOST = 18;
+  ERROR_CODE_UPLOAD_FAILED = 19;
+  ERROR_CODE_SANDBOX_UNAVAILABLE = 20;
+  ERROR_CODE_TIMEOUT = 21;
+  ERROR_CODE_CANCELLED = 22;
+  ERROR_CODE_POLICY_BLOCKED = 23;
+  ERROR_CODE_AUTHZ_DENIED = 24;
+}
+
+enum ClaimResult {
+  CLAIM_RESULT_UNSPECIFIED = 0;
+  CLAIM_RESULT_VIOLATED = 1;
+  CLAIM_RESULT_PROVEN_WITHIN_MODEL = 2;
+  CLAIM_RESULT_TESTED_WITHIN_SCOPE = 3;
+  CLAIM_RESULT_UNKNOWN = 4;
+  CLAIM_RESULT_NOT_RUN = 5;
+  CLAIM_RESULT_INVALID_EVIDENCE = 6;
+}
+
+enum EvidenceKind {
+  EVIDENCE_KIND_UNSPECIFIED = 0;
+  EVIDENCE_KIND_COMPILE = 1;
+  EVIDENCE_KIND_STATIC_ANALYSIS = 2;
+  EVIDENCE_KIND_DIFFERENTIAL_TEST = 3;
+  EVIDENCE_KIND_REGRESSION_TEST = 4;
+  EVIDENCE_KIND_FUZZ = 5;
+  EVIDENCE_KIND_SMT = 6;
+  EVIDENCE_KIND_POLICY = 7;
+  EVIDENCE_KIND_COVERAGE = 8;
+  EVIDENCE_KIND_ENGINE_CRASH = 9;
+  EVIDENCE_KIND_PROVENANCE = 10;
+}
+
+message EvidenceScope {
+  string input_domain = 1;
+  int64 seed_count = 2;
+  int64 generated_cases = 3;
+  int64 elapsed_ms = 4;
+  string budget = 5;
+  map<string, string> details = 6;
+}
+
+message EngineInfo {
+  string name = 1;
+  string version = 2;
+  string image_digest = 3;
+  string protocol = 4;
+}
+
+message EnvironmentInfo {
+  string arch = 1;
+  string sandbox_profile = 2;
+  string toolchain_digest = 3;
+  string os = 4;
+  string region = 5;
+  map<string, string> extra = 6;
+}
+
+message Evidence {
+  string schema_version = 1;
+  string evidence_id = 2;
+  string tenant_id = 3;
+  string run_id = 4;
+  string step_id = 5;
+  string claim_id = 6;
+  EvidenceKind kind = 7;
+  ClaimResult result = 8;
+  EvidenceScope scope = 9;
+  repeated string assumptions = 10;
+  EngineInfo engine = 11;
+  EnvironmentInfo environment = 12;
+  repeated CasRef inputs = 13;
+  repeated CasRef artifacts = 14;
+  repeated string limits = 15;
+  int64 created_at_unix_ms = 16;
+}
+
+message Counterexample {
+  string case_id = 1;
+  string tenant_id = 2;
+  string run_id = 3;
+  string claim_id = 4;
+  string input_codec = 5;
+  CasRef input_ref = 6;
+  CasRef base_observation_ref = 7;
+  CasRef head_observation_ref = 8;
+  string reproducer_image_digest = 9;
+  bool reproduced = 10;
+  string scope = 11;
+  repeated string nondeterminism = 12;
+  bool minimized = 13;
+  int64 created_at_unix_ms = 14;
+}
+
+message StepMetrics {
+  double cpu_seconds = 1;
+  double memory_gib_seconds = 2;
+  double ephemeral_disk_gib_seconds = 3;
+  int64 egress_bytes = 4;
+  int64 cas_written_bytes = 5;
+  int64 queue_wait_ms = 6;
+  int64 execution_ms = 7;
+  int64 upload_ms = 8;
+}
+
+message StepResult {
+  StepOutcome outcome = 1;
+  ErrorCode error_class = 2;
+  string message = 3;
+  bool retryable = 4;
+  string result_digest = 5;
+  string output_manifest = 6;
+  repeated CasRef artifacts = 7;
+  repeated Evidence evidence = 8;
+  repeated Counterexample counterexamples = 9;
+  StepMetrics metrics = 10;
+  string executor_ref = 11;
+  string worker_id = 12;
+  map<string, string> outputs = 13;
+  int64 finished_at_unix_ms = 14;
+}
+
+message StartRequest {
+  string attempt_id = 1;
+  int64 generation = 2;
+  int64 started_at_unix_ms = 3;
+}
+
+message StartResponse {
+  bool accepted = 1;
+  int64 lease_expires_at_unix_ms = 2;
+}
+
+message HeartbeatRequest {
+  string attempt_id = 1;
+  int64 generation = 2;
+  int64 at_unix_ms = 3;
+}
+
+message HeartbeatResponse {
+  bool accepted = 1;
+  // Advisory: the worker should stop cooperatively when true. Cancellation is
+  // enforced by the generation fence even if the worker does not stop.
+  bool cancel_requested = 2;
+  int64 lease_expires_at_unix_ms = 3;
+}
+
+message CompleteRequest {
+  string attempt_id = 1;
+  int64 generation = 2;
+  StepResult result = 3;
+}
+
+message CompleteResponse {
+  string attempt_id = 1;
+  string step_id = 2;
+  // Current step status after the commit.
+  string status = 3;
+  int64 generation = 4;
+  bool all_terminal = 5;
+}
+
+message FailRequest {
+  string attempt_id = 1;
+  int64 generation = 2;
+  ErrorCode error_class = 3;
+  string message = 4;
+  bool retryable = 5;
+}
+
+message FailResponse {
+  string attempt_id = 1;
+  string step_id = 2;
+  string status = 3;
+  int64 generation = 4;
+}
+
+service AttemptService {
+  rpc Start(StartRequest) returns (StartResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Complete(CompleteRequest) returns (CompleteResponse);
+  rpc Fail(FailRequest) returns (FailResponse);
+}

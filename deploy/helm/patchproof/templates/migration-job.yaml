@@ -1,0 +1,58 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "patchproof.fullname" . }}-migrate
+  labels:
+    {{- include "patchproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "patchproof.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+        app.kubernetes.io/part-of: patchproof
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "patchproof.image" (dict "image" .Values.migrations.image "name" "migrations") }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/migrations/migrate.sh"]
+          env:
+            - name: PATCHPROOF_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "postgres.dsnSecretRef.name is required" .Values.postgres.dsnSecretRef.name }}
+                  key: {{ .Values.postgres.dsnSecretRef.key }}
+            - name: TMPDIR
+              value: /tmp
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ include "patchproof.fullname" . }}-migrations
+            defaultMode: 365
+        - name: tmp
+          emptyDir: {}
+{{- end }}

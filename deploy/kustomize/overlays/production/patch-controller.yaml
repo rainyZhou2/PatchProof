@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchproof-controller
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          env:
+            - name: PATCHPROOF_WORKER_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: patchproof-site
+                  key: worker-image
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
+            limits:
+              cpu: "8"
+              memory: 8Gi

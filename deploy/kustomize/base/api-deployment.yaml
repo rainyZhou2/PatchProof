@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchproof-api
+  labels:
+    app.kubernetes.io/name: patchproof
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: patchproof
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patchproof
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patchproof
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: patchproof
+    spec:
+      serviceAccountName: patchproof-api
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/patchproof/patchproof-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PATCHPROOF_CONFIG
+              value: /etc/patchproof/config.yaml
+            - name: PATCHPROOF_ROLE
+              value: api
+            - name: PATCHPROOF_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: patchproof-secrets
+                  key: postgres-dsn
+            - name: PATCHPROOF_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: patchproof-secrets
+                  key: s3-access-key
+            - name: PATCHPROOF_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: patchproof-secrets
+                  key: s3-secret-key
+            - name: PATCHPROOF_ATTEMPT_TOKEN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: patchproof-secrets
+                  key: attempt-token-key
+            - name: PATCHPROOF_DEV_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: patchproof-secrets
+                  key: dev-token
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /etc/patchproof
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: patchproof-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: patchproof
+                    app.kubernetes.io/component: api
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: patchproof
+              app.kubernetes.io/component: api

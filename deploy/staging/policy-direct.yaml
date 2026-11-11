@@ -1,0 +1,27 @@
+apiVersion: patchproof.io/v1
+kind: VerificationPolicy
+metadata:
+  name: staging-direct
+spec:
+  trustedSource: {type: project-admin, requireSignedRevision: true}
+  sources: {maxRepositorySizeGiB: 2, maxChangedFiles: 500, maxFileSizeMiB: 64, disallowSubmodulesUnlessApproved: true}
+  verification:
+    required: [compile, regression-test, protected-assets]
+    optional: []
+    allowInconclusiveOn: []
+    minimumEvidenceLevels: {}
+  execution:
+    isolationTier: untrusted-gvisor
+    allowedRegions: [staging]
+    defaultCpuMilli: 1000
+    defaultMemoryMiB: 2048
+    defaultDiskGiB: 5
+    maxStepWallSeconds: 600
+    maxRunWallSeconds: 1800
+    subjectNetwork: none
+    artifactTransport: direct
+    workerImage: patchproof-worker:staging
+    runtimeClass: gvisor
+  budgets: {totalCpuSeconds: 1200, fuzzCpuSeconds: 120, maxParallelSteps: 4, maxStepCount: 16}
+  protectedPaths: [".github/workflows/**", ".patchproof/**", "tests/security/**"]
+  report: {formats: [json, markdown, sarif], requireAttestation: true, includeCounterexamples: true}

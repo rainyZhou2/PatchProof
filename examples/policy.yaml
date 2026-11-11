@@ -1,0 +1,58 @@
+apiVersion: patchproof.io/v1
+kind: VerificationPolicy
+metadata:
+  name: example-local
+spec:
+  trustedSource:
+    type: project-admin
+    requireSignedRevision: false
+  sources:
+    maxRepositorySizeGiB: 2
+    maxChangedFiles: 500
+    maxFileSizeMiB: 64
+    disallowSubmodulesUnlessApproved: true
+  verification:
+    required:
+      - compile
+      - regression-test
+      - differential-fuzz
+      - protected-assets
+    optional: []
+    allowInconclusiveOn: []
+    minimumEvidenceLevels:
+      differential-fuzz: TESTED_WITHIN_SCOPE
+    contracts:
+      - id: normalize-preservation
+        symbol: example.com/demo.Normalize
+        language: go
+        kind: behavior-preservation
+        title: Normalize preserves values in the declared domain
+        domain: signed 64-bit integers, including negative values
+        domainRef: contracts/normalize.yaml
+        observable: return-value
+        required: true
+        minimumResult: TESTED_WITHIN_SCOPE
+  execution:
+    isolationTier: trusted-local
+    allowedRegions: [local]
+    defaultCpuMilli: 2000
+    defaultMemoryMiB: 4096
+    defaultDiskGiB: 10
+    maxStepWallSeconds: 300
+    maxRunWallSeconds: 600
+    subjectNetwork: none
+    artifactTransport: direct
+    workerImage: patchproof-worker:local
+  budgets:
+    totalCpuSeconds: 600
+    fuzzCpuSeconds: 30
+    maxParallelSteps: 4
+    maxStepCount: 16
+  protectedPaths:
+    - .github/workflows/**
+    - .patchproof/**
+    - tests/security/**
+  report:
+    formats: [json, markdown, sarif]
+    requireAttestation: true
+    includeCounterexamples: true

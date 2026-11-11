@@ -1,0 +1,368 @@
+# Default values for the PatchProof control-plane chart.
+#
+# Image digests are required at render time. Set every `digest` to the
+# `sha256:...` value produced by the release pipeline; tags are not accepted.
+# Secrets are referenced, never rendered. Required secrets:
+#   - PostgreSQL DSN (postgres.dsnSecretRef)
+#   - S3 access key and secret key (cas.s3.secretRef)
+#   - attempt token signing key, at least 32 bytes (auth.attemptTokenKeySecretRef)
+#   - OIDC settings or the development token (auth)
+#   - report signing key pair when signing.require=true (signing.keySecretRef)
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Region of this control plane. Runs are created in the tenant home region.
+region: region-a
+# Cluster id reported by the cluster agent; required when clusterAgent.enabled.
+clusterId: ""
+# Public base URL used for run links and worker callbacks.
+externalUrl: https://patchproof.example.org
+
+imagePullSecrets: []
+
+images:
+  api:
+    repository: ghcr.io/patchproof/patchproof-api
+    digest: ""
+    pullPolicy: IfNotPresent
+  controller:
+    repository: ghcr.io/patchproof/patchproof-controller
+    digest: ""
+    pullPolicy: IfNotPresent
+  clusterAgent:
+    repository: ghcr.io/patchproof/patchproof-cluster-agent
+    digest: ""
+    pullPolicy: IfNotPresent
+
+postgres:
+  dsnSecretRef:
+    name: patchproof-postgres
+    key: dsn
+  maxConns: 20
+  minConns: 2
+  statementTimeout: 30s
+
+nats:
+  urls:
+    - nats://nats.patchproof-system.svc.cluster.local:4222
+  stream: PATCHPROOF
+  consumerPrefix: patchproof
+  maxAckPending: 512
+  ackWait: 30s
+  outboxInterval: 500ms
+
+cas:
+  s3:
+    endpoint: ""
+    bucket: patchproof-region-a
+    region: region-a
+    forcePathStyle: false
+    publicPrefix: ""
+    presignTtl: 10m
+    secretRef:
+      name: patchproof-s3
+      accessKeyKey: access-key
+      secretKeyKey: secret-key
+
+auth:
+  # oidc is the only supported production mode. dev requires auth.dev.enabled.
+  mode: oidc
+  dev:
+    enabled: false
+    tokenSecretRef:
+      name: patchproof-dev-auth
+      key: token
+    tenantId: ""
+    subject: patchproof-dev
+    roles: [admin, operator, viewer, platform-admin]
+  oidc:
+    issuer: ""
+    audience: ""
+    jwksUrl: ""
+    tenantClaim: tenant_id
+    rolesClaim: roles
+    groupsClaim: groups
+  attemptTokenKeySecretRef:
+    name: patchproof-attempt-token
+    key: key
+  internalTokenSecretRef:
+    name: ""
+    key: token
+  adminSubjects: []
+
+signing:
+  keyId: patchproof-default
+  require: true
+  keySecretRef:
+    name: patchproof-signing
+    privateKeyKey: signing.pem
+    publicKeyKey: signing.pub
+
+execution:
+  # Worker image used by per-attempt Kubernetes Jobs. The chart does not deploy
+  # workers; the cluster agent creates Jobs in execution.namespace.
+  workerImage:
+    repository: ghcr.io/patchproof/patchproof-worker
+    digest: ""
+  engineImage:
+    repository: ""
+    digest: ""
+  # Broker image used for brokered stage-in/stage-out Jobs. Required only when
+  # artifactTransport=brokered-offline-io.
+  brokerImage:
+    repository: ghcr.io/patchproof/patchproof-broker
+    digest: ""
+  brokerServiceAccount: patchproof-broker
+  brokeredStorageClass: ""
+  workspaceSizeGiB: 20
+  runtimeClass: gvisor
+  namespace: patchproof-execution
+  serviceAccountName: patchproof-worker
+  defaultIsolation: untrusted-gvisor
+  maxIsolation: untrusted-vm
+  allowedLanguages: [go]
+  # Cluster agent registration URL; empty uses externalUrl.
+  agentEndpoint: ""
+  # Tenant security tier raises the isolation floor. Keep true outside local dev.
+  enforceTenantFloor: true
+  # Local file repositories and full fetches are for trusted-local development.
+  allowFileRepositories: false
+  allowFullFetch: false
+  # Expose a pod token for IRSA/workload identity. Static S3 keys are never
+  # injected into worker Jobs.
+  automountWorkerToken: false
+  # Tiers advertised by the cluster agent. untrusted-* require runtimeClass.
+  supportedIsolationTiers: [isolated-container, untrusted-gvisor]
+  nodeSelector: {}
+  tolerations: []
+  jobTtl: 30m
+  jobBackoffLimit: 0
+  activeDeadline: 20m
+  maxConcurrent: 64
+  reportBackUrl: ""
+  # External stdio engines. The binaries must exist in the worker image.
+  plugins: []
+
+scheduler:
+  shardCount: 16
+  leaseTtl: 2m
+  pollInterval: 1s
+  batchSize: 64
+  maxStepsPerTenant: 64
+  maxStepsPerCluster: 256
+  placement: score
+  priorityBoostMax: 0
+  actionCacheEnabled: true
+  actionCacheTtl: 168h
+  cacheEpoch: ""
+
+telemetry:
+  logLevel: info
+  logFormat: json
+  otlpEndpoint: ""
+  otlpInsecure: false
+  sampleRatio: 0.1
+  serviceNamespace: patchproof
+
+limits:
+  maxRepositoryBytes: 2147483648
+  maxChangedFiles: 2000
+  maxStepCount: 64
+  maxRunWallSeconds: 3600
+  defaultWallSeconds: 900
+  defaultCpuSeconds: 1200
+  defaultFuzzCpuSeconds: 600
+  maxParallelSteps: 64
+  apiRpsPerTenant: 20
+
+api:
+  replicas: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  hpa:
+    enabled: false
+    minReplicas: 3
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+controller:
+  replicas: 2
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+  service:
+    metricsPort: 9090
+    annotations: {}
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+clusterAgent:
+  # The agent is deployed once per execution cluster, not once per region.
+  enabled: false
+  replicas: 1
+  # Bearer token accepted by the agent for /v1/executions calls.
+  tokenSecretRef:
+    name: patchproof-cluster-agent
+    key: token
+  rbac:
+    create: false
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  service:
+    port: 8080
+    annotations: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+worker:
+  serviceAccount:
+    # Created in execution.namespace when true; the namespace must already exist.
+    create: false
+    name: patchproof-worker
+    annotations: {}
+  brokerServiceAccount:
+    # Trusted stage-in/stage-out identity. Keep separate from the worker so the
+    # executing sandbox never receives CAS credentials.
+    create: false
+    name: patchproof-broker
+    annotations: {}
+
+migrations:
+  enabled: true
+  image:
+    repository: docker.io/library/postgres
+    digest: ""
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+networkPolicy:
+  enabled: true
+  ingress:
+    api:
+      # Empty selector matches all namespaces. Restrict to the ingress
+      # controller namespace in production.
+      namespaceSelector: {}
+    metrics:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    clusterAgent:
+      namespaceSelector: {}
+  egress:
+    dns:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    postgres:
+      cidrs: ["0.0.0.0/0"]
+      port: 5432
+    nats:
+      cidrs: ["0.0.0.0/0"]
+      port: 4222
+    s3:
+      cidrs: ["0.0.0.0/0"]
+      port: 443
+    otlp:
+      cidrs: ["0.0.0.0/0"]
+      port: 4317
+    clusterAgent:
+      cidrs: ["0.0.0.0/0"]
+      port: 8080
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  relabelings: []
+
+priorityClasses:
+  enabled: false
+  critical:
+    name: patchproof-critical
+    value: 100000
+  standard:
+    name: patchproof-standard
+    value: 10000
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
