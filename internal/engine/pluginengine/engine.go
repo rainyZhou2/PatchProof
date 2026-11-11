@@ -263,13 +263,49 @@ func (e *Engine) dial(ctx context.Context, workspace string) (*plugin.Client, er
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Inherit the worker toolchain environment, then apply plugin overrides.
-	env := append(os.Environ(), e.cfg.Env...)
+	// Inherit the toolchain environment, but never hand the attempt token or
+	// storage credentials to an external plugin. Operators can explicitly add
+	// values back through the plugin's configured Env if a plugin needs one.
+	env := append(pluginEnvironment(), e.cfg.Env...)
 	return plugin.Dial(e.cfg.Command, plugin.CommandConfig{
 		Env:           env,
 		Dir:           workspace,
 		MaxFrameBytes: e.cfg.MaxFrameBytes,
 	})
+}
+
+// pluginEnvironment copies the worker environment while removing credentials
+// that are scoped to the attempt or the platform CAS. The plugin runs in the
+// same trust domain as the worker, but it does not need these capabilities to
+// execute a step; leaking them turns every plugin into a credential holder.
+func pluginEnvironment() []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base))
+	for _, entry := range base {
+		if pluginEnvForbidden(entry) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func pluginEnvForbidden(entry string) bool {
+	key, _, ok := strings.Cut(entry, "=")
+	if !ok || key == "" {
+		return true
+	}
+	switch key {
+	case "PATCHPROOF_ATTEMPT_TOKEN", "PATCHPROOF_CALLBACK_URL",
+		"PATCHPROOF_INTERNAL_TOKEN", "PATCHPROOF_DEV_TOKEN":
+		return true
+	}
+	for _, prefix := range []string{"PATCHPROOF_S3_", "PATCHPROOF_CAS_", "AWS_", "AZURE_", "GOOGLE_"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) capabilities(ctx context.Context, client *plugin.Client) (plugin.Capabilities, error) {
