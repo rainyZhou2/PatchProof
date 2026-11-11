@@ -79,6 +79,20 @@ func TestCapabilitiesAndExecute(t *testing.T) {
 	}
 }
 
+func TestCancelAfterSuccessfulCallKeepsConnectionUsable(t *testing.T) {
+	client := startPair(t, &fakeService{})
+	for i := 0; i < 500; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		if _, err := client.Capabilities(ctx); err != nil {
+			t.Fatalf("iteration %d: capabilities: %v", i, err)
+		}
+		cancel()
+		if _, err := client.Execute(context.Background(), StepRequest{AttemptID: "attempt", FencingGeneration: 1}); err != nil {
+			t.Fatalf("iteration %d: execute after cancellation: %v", i, err)
+		}
+	}
+}
+
 func TestRemoteErrorsAreReturned(t *testing.T) {
 	client := startPair(t, &fakeService{executeErr: errors.New("engine crashed")})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -117,7 +117,9 @@ func (c *Client) call(ctx context.Context, frameType FrameType, payload any, out
 		return err
 	}
 	done := make(chan struct{})
+	watcher := make(chan struct{})
 	go func() {
+		defer close(watcher)
 		select {
 		case <-ctx.Done():
 			_ = c.conn.Close()
@@ -126,6 +128,10 @@ func (c *Client) call(ctx context.Context, frameType FrameType, payload any, out
 	}()
 	frame, err := ReadFrame(c.conn, c.maxFrame)
 	close(done)
+	// Wait for the watcher to observe done before returning. A caller that
+	// cancels its context immediately after a successful call would otherwise
+	// race the watcher and close a healthy connection.
+	<-watcher
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
