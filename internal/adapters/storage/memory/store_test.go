@@ -1413,3 +1413,163 @@ func testReport(run domain.Run, at time.Time) domain.Report {
 		GeneratedAt: at,
 	}
 }
+
+func TestFailureCancelsTransitiveDependents(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	run := f.createRun(t, domain.RunValidating, testNow, "cascade")
+	root := newStep(run, "compile", domain.StepKindCompile, domain.StepReady, 1, 0, 10, testNow)
+	mid := newStep(run, "regression", domain.StepKindRegression, domain.StepBlocked, 1, 0, 5, testNow)
+	leaf := newStep(run, "differential", domain.StepKindDifferential, domain.StepBlocked, 1, 0, 1, testNow)
+	dependencies := map[domain.StepID][]domain.StepID{
+		mid.ID:  {root.ID},
+		leaf.ID: {mid.ID},
+	}
+	run = f.plan(t, run, []domain.Step{root, mid, leaf}, dependencies, nil, testNow)
+	root = f.reloadStep(t, root)
+
+	lease := f.lease(t, run, root, 0, testNow.Add(time.Second))
+	f.start(t, lease, testNow.Add(2*time.Second))
+	violated := testEvidence(run, root.ID, testNow.Add(3*time.Second))
+	violated.Result = domain.ClaimTested
+	outcome, err := f.store.CommitAttempt(ctx, domain.AttemptCommit{
+		Ref: lease.Ref(),
+		Result: domain.StepResult{
+			Outcome:    domain.OutcomeFailed,
+			ErrorClass: domain.ErrCompilationFailed,
+			Message:    "compile failed",
+			Evidence:   []domain.Evidence{violated},
+			FinishedAt: testNow.Add(3 * time.Second),
+		},
+		At: testNow.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("commit attempt: %v", err)
+	}
+	if len(outcome.Propagated) != 2 {
+		t.Fatalf("propagated = %d, want 2", len(outcome.Propagated))
+	}
+	stored, err := f.store.ListEvidence(ctx, run.TenantID, run.ID)
+	if err != nil {
+		t.Fatalf("list evidence: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Result != domain.ClaimTested {
+		t.Fatalf("failed attempt evidence was not persisted: %+v", stored)
+	}
+	for _, want := range []domain.StepID{mid.ID, leaf.ID} {
+		step, err := f.store.GetStep(ctx, run.TenantID, want)
+		if err != nil {
+			t.Fatalf("get step %s: %v", want, err)
+		}
+		if step.Status != domain.StepCancelled {
+			t.Fatalf("step %s status = %s, want CANCELLED", step.Key, step.Status)
+		}
+		if step.FailureClass != domain.ErrDependencyFailed {
+			t.Fatalf("step %s failure class = %s, want %s", step.Key, step.FailureClass, domain.ErrDependencyFailed)
+		}
+	}
+	if !outcome.AllTerminal {
+		t.Fatal("run should be terminal after dependent propagation")
+	}
+}
+
+func TestTerminalRunRequestKeyCanBeReused(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	first := f.createRun(t, domain.RunCancelled, testNow, "reusable")
+	second := first
+	second.ID = domain.NewRunID()
+	second.CreatedAt = testNow.Add(time.Second)
+	second.UpdatedAt = second.CreatedAt
+	created, err := f.store.CreateRun(ctx, domain.CreateRunRecord{Run: second})
+	if err != nil {
+		t.Fatalf("create replacement run: %v", err)
+	}
+	if created.ID != second.ID {
+		t.Fatalf("idempotency key was not reassigned: got %s want %s", created.ID, second.ID)
+	}
+}
+
+func TestCreateRunEnforcesActiveRunQuota(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.createRun(t, domain.RunValidating, testNow, "active")
+	blocked := domain.Run{
+		ID: domain.NewRunID(), TenantID: f.tenantID, ProjectID: f.projectID,
+		RequestKey: "blocked", Fingerprint: "fp-blocked", BaseCommit: "0123456",
+		HeadCommit: "abcdef1", PolicyDigest: "sha256:" + strings.Repeat("a", 64),
+		Status: domain.RunValidating, Region: "us-east-1", CreatedAt: testNow, UpdatedAt: testNow,
+	}
+	_, err := f.store.CreateRun(ctx, domain.CreateRunRecord{Run: blocked, MaxActiveRuns: 1})
+	if !errors.Is(err, domain.ErrQuotaExceeded) {
+		t.Fatalf("expected quota error, got %v", err)
+	}
+}
+
+func TestCountActiveStepsExcludesBlocked(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	run := f.createRun(t, domain.RunValidating, testNow, "capacity")
+	root := newStep(run, "compile", domain.StepKindCompile, domain.StepReady, 2, 0, 5, testNow)
+	dependent := newStep(run, "regression", domain.StepKindRegression, domain.StepBlocked, 2, 0, 1, testNow)
+	f.plan(t, run, []domain.Step{root, dependent}, map[domain.StepID][]domain.StepID{dependent.ID: {root.ID}}, nil, testNow)
+	count, err := f.store.CountActiveSteps(ctx, f.tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("active steps = %d, want 1", count)
+	}
+}
+
+func TestLeaseEnforcesRunParallelBudget(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	run := f.createRun(t, domain.RunValidating, testNow, "parallel-budget")
+	first := newStep(run, "first", domain.StepKindCompile, domain.StepReady, 2, 0, 5, testNow)
+	second := newStep(run, "second", domain.StepKindRegression, domain.StepReady, 2, 0, 4, testNow)
+	f.plan(t, run, []domain.Step{first, second}, nil, nil, testNow)
+	first = f.reloadStep(t, first)
+	second = f.reloadStep(t, second)
+
+	if _, err := f.store.AcquireLease(ctx, domain.LeaseRequest{
+		TenantID: run.TenantID, RunID: run.ID, StepID: first.ID, AttemptID: domain.NewAttemptID(),
+		ExpectedGeneration: 0, Owner: "worker-1", TTL: 30 * time.Second, ClusterID: "cluster-a",
+		Now: testNow.Add(time.Second), MaxParallelSteps: 1,
+	}); err != nil {
+		t.Fatalf("first lease: %v", err)
+	}
+	_, err := f.store.AcquireLease(ctx, domain.LeaseRequest{
+		TenantID: run.TenantID, RunID: run.ID, StepID: second.ID, AttemptID: domain.NewAttemptID(),
+		ExpectedGeneration: 0, Owner: "worker-1", TTL: 30 * time.Second, ClusterID: "cluster-a",
+		Now: testNow.Add(2 * time.Second), MaxParallelSteps: 1,
+	})
+	var leaseErr *domain.LeaseError
+	if !errors.As(err, &leaseErr) {
+		t.Fatalf("expected parallel budget lease error, got %v", err)
+	}
+}
+
+func TestLeaseEnforcesRunCPUBudget(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	run := f.createRun(t, domain.RunValidating, testNow, "cpu-budget")
+	first := newStep(run, "first", domain.StepKindCompile, domain.StepReady, 2, 0, 5, testNow)
+	second := newStep(run, "second", domain.StepKindRegression, domain.StepReady, 2, 0, 4, testNow)
+	f.plan(t, run, []domain.Step{first, second}, nil, nil, testNow)
+	first = f.reloadStep(t, first)
+	second = f.reloadStep(t, second)
+	lease := f.lease(t, run, first, 0, testNow.Add(time.Second))
+	f.start(t, lease, testNow.Add(2*time.Second))
+	f.commitSuccess(t, lease, testNow.Add(3*time.Second), domain.StepMetrics{CPUSeconds: 5})
+
+	_, err := f.store.AcquireLease(ctx, domain.LeaseRequest{
+		TenantID: run.TenantID, RunID: run.ID, StepID: second.ID, AttemptID: domain.NewAttemptID(),
+		ExpectedGeneration: 0, Owner: "worker-1", TTL: 30 * time.Second, ClusterID: "cluster-a",
+		Now: testNow.Add(4 * time.Second), MaxCPUSeconds: 5,
+	})
+	var leaseErr *domain.LeaseError
+	if !errors.As(err, &leaseErr) {
+		t.Fatalf("expected CPU budget lease error, got %v", err)
+	}
+}

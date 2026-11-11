@@ -211,6 +211,8 @@ type LeaseRequest struct {
 	ClusterID          ClusterID     `json:"cluster_id"`
 	Now                time.Time     `json:"now"`
 	Priority           int           `json:"priority"`
+	MaxParallelSteps   int           `json:"max_parallel_steps,omitempty"`
+	MaxCPUSeconds      float64       `json:"max_cpu_seconds,omitempty"`
 }
 
 func (r LeaseRequest) Validate() error {
@@ -234,6 +236,12 @@ func (r LeaseRequest) Validate() error {
 	}
 	if r.TTL < 10*time.Second || r.TTL > time.Hour {
 		return &ValidationError{Field: "lease_ttl", Reason: "must be between 10s and 1h"}
+	}
+	if r.MaxParallelSteps < 0 {
+		return &ValidationError{Field: "max_parallel_steps", Reason: "must not be negative"}
+	}
+	if r.MaxCPUSeconds < 0 {
+		return &ValidationError{Field: "max_cpu_seconds", Reason: "must not be negative"}
 	}
 	return nil
 }
@@ -335,6 +343,7 @@ type CommitOutcome struct {
 	Step        Step      `json:"step"`
 	Attempt     Attempt   `json:"attempt"`
 	Promoted    []Step    `json:"promoted,omitempty"`
+	Propagated  []Step    `json:"propagated,omitempty"`
 	AllTerminal bool      `json:"all_terminal"`
 	RunStatus   RunStatus `json:"run_status"`
 }

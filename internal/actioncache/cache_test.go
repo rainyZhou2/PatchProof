@@ -11,7 +11,7 @@ import (
 func testInput() KeyInput {
 	return KeyInput{
 		TenantID: "11111111-1111-4111-8111-111111111111", CacheEpoch: "v1.2.3",
-		StepKind: domain.StepKindCompile, Engine: "go-build",
+		StepKind: domain.StepKindCompile, Engine: "go-build", EngineVersion: "1.0.0",
 		SnapshotDigest: "sha256:" + strings.Repeat("a", 64), BaseSnapshot: "cas://sha256/" + strings.Repeat("b", 64),
 		HeadSnapshot: "cas://sha256/" + strings.Repeat("c", 64), PolicyDigest: "sha256:" + strings.Repeat("d", 64),
 		InputManifest: "sha256:" + strings.Repeat("e", 64), Architecture: "amd64", Isolation: "isolated-container",
@@ -35,6 +35,7 @@ func TestKeyIsDeterministicAndSensitive(t *testing.T) {
 	cases := map[string]func(*KeyInput){
 		"tenant":       func(in *KeyInput) { in.TenantID = "22222222-2222-4222-8222-222222222222" },
 		"cache epoch":  func(in *KeyInput) { in.CacheEpoch = "v1.2.4" },
+		"engine":       func(in *KeyInput) { in.EngineVersion = "1.0.1" },
 		"snapshot":     func(in *KeyInput) { in.SnapshotDigest = "sha256:" + strings.Repeat("f", 64) },
 		"policy":       func(in *KeyInput) { in.PolicyDigest = "sha256:" + strings.Repeat("0", 64) },
 		"architecture": func(in *KeyInput) { in.Architecture = "arm64" },

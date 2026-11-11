@@ -10,6 +10,7 @@ import (
 
 const (
 	nonTerminalStepStatusesSQL = "('BLOCKED', 'READY', 'LEASED', 'RUNNING', 'RETRY_WAIT')"
+	capacityStepStatusesSQL    = "('READY', 'LEASED', 'RUNNING', 'RETRY_WAIT')"
 	terminalRunStatusesSQL     = "('COMPLETED', 'PARTIAL', 'INFRA_FAILED', 'CANCELLED', 'REJECTED')"
 )
 
@@ -190,7 +191,7 @@ func (s *Store) CountActiveSteps(ctx context.Context, tenantID domain.TenantID) 
 	}
 	var count int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM steps
-		WHERE tenant_id = $1::uuid AND status IN `+nonTerminalStepStatusesSQL,
+		WHERE tenant_id = $1::uuid AND status IN `+capacityStepStatusesSQL,
 		tenantID.String()).Scan(&count); err != nil {
 		return 0, mapError(err, "step", tenantID.String())
 	}

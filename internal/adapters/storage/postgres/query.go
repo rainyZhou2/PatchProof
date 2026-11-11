@@ -18,7 +18,7 @@ type scanner interface {
 
 const runColumns = `run_id::text, tenant_id::text, project_id::text, request_key, fingerprint,
 	base_commit, head_commit, patch_digest, snapshot_digest, base_snapshot, head_snapshot,
-	policy_digest, policy_ref, requested_checks, budget, status, verdict, state_version,
+	policy_digest, policy_ref, requested_checks, budget, replay, status, verdict, state_version,
 	failure_class, failure_message, region, created_by, created_at, updated_at,
 	planned_at, started_at, finished_at`
 
@@ -62,6 +62,7 @@ func scanRun(row scanner) (domain.Run, error) {
 		projectID    string
 		requested    []byte
 		budget       []byte
+		replay       []byte
 		status       string
 		verdict      string
 		failureClass string
@@ -73,7 +74,7 @@ func scanRun(row scanner) (domain.Run, error) {
 		&runID, &tenantID, &projectID, &run.RequestKey, &run.Fingerprint,
 		&run.BaseCommit, &run.HeadCommit, &run.PatchDigest, &run.SnapshotDigest,
 		&run.BaseSnapshot, &run.HeadSnapshot, &run.PolicyDigest, &run.PolicyRef,
-		&requested, &budget, &status, &verdict, &run.StateVersion,
+		&requested, &budget, &replay, &status, &verdict, &run.StateVersion,
 		&failureClass, &run.FailureMessage, &run.Region, &run.CreatedBy,
 		&run.CreatedAt, &run.UpdatedAt, &plannedAt, &startedAt, &finishedAt,
 	); err != nil {
@@ -95,6 +96,15 @@ func scanRun(row scanner) (domain.Run, error) {
 	}
 	if err := decodeJSON(budget, &run.Budget); err != nil {
 		return domain.Run{}, fmt.Errorf("scan run budget: %w", err)
+	}
+	if len(replay) > 0 {
+		var spec domain.ReplaySpec
+		if err := decodeJSON(replay, &spec); err != nil {
+			return domain.Run{}, fmt.Errorf("scan run replay: %w", err)
+		}
+		if spec.SourceRunID != "" {
+			run.Replay = &spec
+		}
 	}
 	return run, nil
 }

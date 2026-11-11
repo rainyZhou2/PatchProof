@@ -7,49 +7,51 @@ import (
 )
 
 type Run struct {
-	ID              RunID      `json:"run_id"`
-	TenantID        TenantID   `json:"tenant_id"`
-	ProjectID       ProjectID  `json:"project_id"`
-	RequestKey      string     `json:"request_key"`
-	Fingerprint     string     `json:"fingerprint"`
-	BaseCommit      string     `json:"base_commit"`
-	HeadCommit      string     `json:"head_commit"`
-	PatchDigest     string     `json:"patch_digest"`
-	SnapshotDigest  string     `json:"snapshot_digest,omitempty"`
-	BaseSnapshot    string     `json:"base_snapshot_digest,omitempty"`
-	HeadSnapshot    string     `json:"head_snapshot_digest,omitempty"`
-	PolicyDigest    string     `json:"policy_digest"`
-	PolicyRef       string     `json:"policy_ref"`
-	RequestedChecks []string   `json:"requested_checks"`
-	Budget          Budget     `json:"budget"`
-	Status          RunStatus  `json:"status"`
-	Verdict         Verdict    `json:"verdict,omitempty"`
-	StateVersion    int64      `json:"state_version"`
-	FailureClass    ErrorClass `json:"failure_class,omitempty"`
-	FailureMessage  string     `json:"failure_message,omitempty"`
-	Region          string     `json:"region"`
-	CreatedBy       string     `json:"created_by"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	PlannedAt       *time.Time `json:"planned_at,omitempty"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	ID              RunID       `json:"run_id"`
+	TenantID        TenantID    `json:"tenant_id"`
+	ProjectID       ProjectID   `json:"project_id"`
+	RequestKey      string      `json:"request_key"`
+	Fingerprint     string      `json:"fingerprint"`
+	BaseCommit      string      `json:"base_commit"`
+	HeadCommit      string      `json:"head_commit"`
+	PatchDigest     string      `json:"patch_digest"`
+	SnapshotDigest  string      `json:"snapshot_digest,omitempty"`
+	BaseSnapshot    string      `json:"base_snapshot_digest,omitempty"`
+	HeadSnapshot    string      `json:"head_snapshot_digest,omitempty"`
+	PolicyDigest    string      `json:"policy_digest"`
+	PolicyRef       string      `json:"policy_ref"`
+	RequestedChecks []string    `json:"requested_checks"`
+	Budget          Budget      `json:"budget"`
+	Replay          *ReplaySpec `json:"replay,omitempty"`
+	Status          RunStatus   `json:"status"`
+	Verdict         Verdict     `json:"verdict,omitempty"`
+	StateVersion    int64       `json:"state_version"`
+	FailureClass    ErrorClass  `json:"failure_class,omitempty"`
+	FailureMessage  string      `json:"failure_message,omitempty"`
+	Region          string      `json:"region"`
+	CreatedBy       string      `json:"created_by"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
+	PlannedAt       *time.Time  `json:"planned_at,omitempty"`
+	StartedAt       *time.Time  `json:"started_at,omitempty"`
+	FinishedAt      *time.Time  `json:"finished_at,omitempty"`
 }
 
 type RunRequest struct {
-	TenantID        TenantID  `json:"tenant_id"`
-	ProjectID       ProjectID `json:"project_id"`
-	RequestKey      string    `json:"request_key"`
-	Fingerprint     string    `json:"fingerprint"`
-	BaseCommit      string    `json:"base_commit"`
-	HeadCommit      string    `json:"head_commit"`
-	PatchDigest     string    `json:"patch_digest,omitempty"`
-	PolicyRef       string    `json:"policy_ref"`
-	PolicyDigest    string    `json:"policy_digest,omitempty"`
-	RequestedChecks []string  `json:"requested_checks"`
-	Budget          Budget    `json:"budget"`
-	Region          string    `json:"region,omitempty"`
-	CreatedBy       string    `json:"created_by"`
+	TenantID        TenantID    `json:"tenant_id"`
+	ProjectID       ProjectID   `json:"project_id"`
+	RequestKey      string      `json:"request_key"`
+	Fingerprint     string      `json:"fingerprint"`
+	BaseCommit      string      `json:"base_commit"`
+	HeadCommit      string      `json:"head_commit"`
+	PatchDigest     string      `json:"patch_digest,omitempty"`
+	PolicyRef       string      `json:"policy_ref"`
+	PolicyDigest    string      `json:"policy_digest,omitempty"`
+	RequestedChecks []string    `json:"requested_checks"`
+	Budget          Budget      `json:"budget"`
+	Replay          *ReplaySpec `json:"replay,omitempty"`
+	Region          string      `json:"region,omitempty"`
+	CreatedBy       string      `json:"created_by"`
 }
 
 func (r RunRequest) Validate() error {
@@ -89,6 +91,12 @@ func (r RunRequest) Validate() error {
 	if err := r.Budget.Validate(); err != nil {
 		return err
 	}
+	if r.Replay != nil {
+		spec := r.Replay.Normalized()
+		if err := spec.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -121,6 +129,12 @@ func (r Run) Validate() error {
 	}
 	if !r.Budget.IsZero() {
 		if err := r.Budget.Validate(); err != nil {
+			return err
+		}
+	}
+	if r.Replay != nil {
+		spec := r.Replay.Normalized()
+		if err := spec.Validate(); err != nil {
 			return err
 		}
 	}

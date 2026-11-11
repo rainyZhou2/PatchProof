@@ -57,6 +57,7 @@ func TestScanRunPopulatesAllFields(t *testing.T) {
 		"sha256:snapshot", "sha256:base", "sha256:head", "sha256:policy", "policy-ref",
 		[]byte(`["compile","regression-test"]`),
 		[]byte(`{"cpu_seconds":120,"wall_seconds":300,"max_parallel_steps":4}`),
+		nil,
 		"VALIDATING", "INCONCLUSIVE", int64(7), "ENGINE_CRASH", "boom", "region-a", "alice",
 		createdAt, updatedAt, &plannedAt, nil, nil,
 	}}

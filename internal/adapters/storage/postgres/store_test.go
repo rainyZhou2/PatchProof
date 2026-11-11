@@ -1198,3 +1198,172 @@ func TestIntegrationReadyDefaultsAndLeaseBoundaries(t *testing.T) {
 		t.Fatalf("expected LeaseError for cancelling run, got %T: %v", err, err)
 	}
 }
+
+func TestIntegrationFailureCancelsDependents(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	tenant, project := seedTenantProject(t, store)
+	created, err := store.CreateRun(ctx, newRunRecord(t, tenant, project, "cascade-request", "cascade-fingerprint"))
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	first := newStep(created, "compile:go", domain.StepKindCompile, domain.StepReady, 0)
+	first.MaxAttempts = 1
+	second := newStep(created, "regression:go", domain.StepKindRegression, domain.StepBlocked, 0)
+	third := newStep(created, "differential:go", domain.StepKindDifferential, domain.StepBlocked, 0)
+	dependencies := map[domain.StepID][]domain.StepID{
+		second.ID: {first.ID},
+		third.ID:  {second.ID},
+	}
+	planRun(t, store, created, []domain.Step{first, second, third}, dependencies, nil)
+
+	lease := acquireLease(t, store, first, "controller-a", 0, time.Now().UTC())
+	if err := store.StartAttempt(ctx, lease.Ref(), time.Now().UTC()); err != nil {
+		t.Fatalf("StartAttempt: %v", err)
+	}
+	finished := time.Now().UTC()
+	evidence := domain.Evidence{
+		SchemaVersion: domain.EvidenceSchemaV1,
+		ID:            domain.NewEvidenceID(),
+		TenantID:      tenant.ID,
+		RunID:         created.ID,
+		StepID:        first.ID,
+		ClaimID:       "compile",
+		Kind:          domain.EvidenceCompile,
+		Result:        domain.ClaimViolated,
+		Scope:         domain.EvidenceScope{InputDomain: "packages"},
+		Engine:        domain.EngineInfo{Name: "go-build", Version: "1.0.0"},
+		Environment:   domain.EnvironmentInfo{Arch: "amd64", SandboxProfile: "container"},
+		CreatedAt:     finished,
+	}
+	outcome, err := store.CommitAttempt(ctx, domain.AttemptCommit{
+		Ref: lease.Ref(),
+		Result: domain.StepResult{
+			Outcome:    domain.OutcomeFailed,
+			ErrorClass: domain.ErrCompilationFailed,
+			Message:    "compile failed",
+			Evidence:   []domain.Evidence{evidence},
+			FinishedAt: finished,
+		},
+		At: finished,
+	})
+	if err != nil {
+		t.Fatalf("CommitAttempt: %v", err)
+	}
+	if len(outcome.Propagated) != 2 {
+		t.Fatalf("propagated = %d, want 2: %+v", len(outcome.Propagated), outcome.Propagated)
+	}
+	stored, err := store.ListEvidence(ctx, tenant.ID, created.ID)
+	if err != nil {
+		t.Fatalf("ListEvidence: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Result != domain.ClaimTested {
+		t.Fatalf("failed attempt evidence was not persisted: %+v", stored)
+	}
+	if !outcome.AllTerminal {
+		t.Fatal("run should be terminal after dependent propagation")
+	}
+	for _, want := range []domain.StepID{second.ID, third.ID} {
+		step, err := store.GetStep(ctx, tenant.ID, want)
+		if err != nil {
+			t.Fatalf("GetStep %s: %v", want, err)
+		}
+		if step.Status != domain.StepCancelled {
+			t.Fatalf("step %s status = %s, want CANCELLED", step.Key, step.Status)
+		}
+		if step.FailureClass != domain.ErrDependencyFailed {
+			t.Fatalf("step %s failure class = %s, want %s", step.Key, step.FailureClass, domain.ErrDependencyFailed)
+		}
+	}
+}
+
+func TestIntegrationTerminalRequestKeyCanBeReused(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	tenant, project := seedTenantProject(t, store)
+	first := newRunRecord(t, tenant, project, "reusable-key", "reusable-fingerprint")
+	first.Run.Status = domain.RunCancelled
+	created, err := store.CreateRun(ctx, first)
+	if err != nil {
+		t.Fatalf("CreateRun first: %v", err)
+	}
+	second := newRunRecord(t, tenant, project, "reusable-key", "reusable-fingerprint")
+	replaced, err := store.CreateRun(ctx, second)
+	if err != nil {
+		t.Fatalf("CreateRun second: %v", err)
+	}
+	if replaced.ID == created.ID || replaced.ID != second.Run.ID {
+		t.Fatalf("request key was not reassigned: first=%s second=%s replaced=%s", created.ID, second.Run.ID, replaced.ID)
+	}
+}
+
+func TestIntegrationCreateRunEnforcesActiveRunQuota(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	tenant, project := seedTenantProject(t, store)
+	if _, err := store.CreateRun(ctx, newRunRecord(t, tenant, project, "active-key", "active-fingerprint")); err != nil {
+		t.Fatalf("CreateRun active: %v", err)
+	}
+	second := newRunRecord(t, tenant, project, "quota-key", "quota-fingerprint")
+	second.MaxActiveRuns = 1
+	_, err := store.CreateRun(ctx, second)
+	if !errors.Is(err, domain.ErrQuotaExceeded) {
+		t.Fatalf("expected quota error, got %v", err)
+	}
+}
+
+func TestIntegrationStepMetricsAccumulateAcrossRetries(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	tenant, project := seedTenantProject(t, store)
+	created, err := store.CreateRun(ctx, newRunRecord(t, tenant, project, "metrics-request", "metrics-fingerprint"))
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	step := newStep(created, "compile:go", domain.StepKindCompile, domain.StepReady, 0)
+	planRun(t, store, created, []domain.Step{step}, nil, nil)
+
+	lease := acquireLease(t, store, step, "controller-a", 0, time.Now().UTC())
+	if err := store.StartAttempt(ctx, lease.Ref(), time.Now().UTC()); err != nil {
+		t.Fatalf("StartAttempt: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.CommitAttempt(ctx, domain.AttemptCommit{
+		Ref: lease.Ref(),
+		Result: domain.StepResult{
+			Outcome: domain.OutcomeRetryable, ErrorClass: domain.ErrExecutorError, Retryable: true,
+			Metrics: domain.StepMetrics{CPUSeconds: 5}, FinishedAt: now,
+		},
+		At: now,
+	}); err != nil {
+		t.Fatalf("first CommitAttempt: %v", err)
+	}
+	if _, err := store.PromoteDueSteps(ctx, now.Add(domain.RetryDelay(1)+time.Second), 10); err != nil {
+		t.Fatalf("PromoteDueSteps: %v", err)
+	}
+	current, err := store.GetStep(ctx, tenant.ID, step.ID)
+	if err != nil {
+		t.Fatalf("GetStep: %v", err)
+	}
+	lease = acquireLease(t, store, current, "controller-a", current.Generation, time.Now().UTC())
+	if err := store.StartAttempt(ctx, lease.Ref(), time.Now().UTC()); err != nil {
+		t.Fatalf("StartAttempt retry: %v", err)
+	}
+	if _, err := store.CommitAttempt(ctx, domain.AttemptCommit{
+		Ref: lease.Ref(),
+		Result: domain.StepResult{
+			Outcome: domain.OutcomeSucceeded, ResultDigest: "sha256:" + strings.Repeat("a", 64),
+			Metrics: domain.StepMetrics{CPUSeconds: 3}, FinishedAt: now.Add(time.Minute),
+		},
+		At: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("second CommitAttempt: %v", err)
+	}
+	usage, err := store.TenantUsage(ctx, tenant.ID, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("TenantUsage: %v", err)
+	}
+	if usage.DailyCPUSeconds != 8 {
+		t.Fatalf("daily cpu seconds = %v, want 8", usage.DailyCPUSeconds)
+	}
+}

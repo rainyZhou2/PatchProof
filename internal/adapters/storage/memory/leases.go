@@ -45,6 +45,32 @@ func (s *Store) AcquireLease(ctx context.Context, request domain.LeaseRequest) (
 	if _, exists := s.attempts[request.AttemptID]; exists {
 		return domain.Lease{}, &domain.LeaseError{StepID: request.StepID, Reason: "attempt id already exists"}
 	}
+	if request.MaxParallelSteps > 0 {
+		active := 0
+		for _, id := range state.stepIDs {
+			candidate, ok := s.steps[id]
+			if !ok {
+				continue
+			}
+			if candidate.Status == domain.StepLeased || candidate.Status == domain.StepRunning {
+				active++
+			}
+		}
+		if active >= request.MaxParallelSteps {
+			return domain.Lease{}, &domain.LeaseError{StepID: request.StepID, Reason: "run parallel step budget is exhausted"}
+		}
+	}
+	if request.MaxCPUSeconds > 0 {
+		used := 0.0
+		for _, id := range state.stepIDs {
+			for _, record := range s.metrics[id] {
+				used += record.metrics.CPUSeconds
+			}
+		}
+		if used >= request.MaxCPUSeconds {
+			return domain.Lease{}, &domain.LeaseError{StepID: request.StepID, Reason: "run CPU budget is exhausted"}
+		}
+	}
 
 	newGeneration := step.Generation + 1
 	deadline := now.Add(request.TTL)

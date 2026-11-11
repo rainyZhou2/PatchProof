@@ -47,7 +47,20 @@ func (s *Store) CreateRun(ctx context.Context, record domain.CreateRunRecord) (d
 		if existing.run.Fingerprint != run.Fingerprint {
 			return domain.Run{}, &domain.IdempotencyConflictError{RequestKey: run.RequestKey}
 		}
-		return cloneRun(existing.run), nil
+		if !existing.run.Status.Terminal() {
+			return cloneRun(existing.run), nil
+		}
+	}
+	if record.MaxActiveRuns > 0 {
+		active := 0
+		for _, state := range s.runs {
+			if !state.run.Status.Terminal() && state.run.TenantID == run.TenantID {
+				active++
+			}
+		}
+		if active >= record.MaxActiveRuns {
+			return domain.Run{}, fmt.Errorf("%w: tenant already has %d active runs", domain.ErrQuotaExceeded, active)
+		}
 	}
 	if _, exists := s.runs[run.ID]; exists {
 		return domain.Run{}, &domain.ConflictError{Resource: "run", ID: run.ID.String(), Reason: "already exists"}

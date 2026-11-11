@@ -7,7 +7,7 @@ import (
 	"github.com/patchproof/patchproof/internal/domain"
 )
 
-// CountActiveSteps returns the number of non-terminal steps for a tenant.
+// CountActiveSteps returns the number of capacity-consuming steps for a tenant.
 func (s *Store) CountActiveSteps(ctx context.Context, tenantID domain.TenantID) (int, error) {
 	if err := tenantID.Validate(); err != nil {
 		return 0, err
@@ -19,7 +19,11 @@ func (s *Store) CountActiveSteps(ctx context.Context, tenantID domain.TenantID) 
 	}
 	count := 0
 	for _, step := range s.steps {
-		if step.TenantID == tenantID && step.Status.Active() {
+		if step.TenantID != tenantID {
+			continue
+		}
+		switch step.Status {
+		case domain.StepReady, domain.StepLeased, domain.StepRunning, domain.StepRetryWait:
 			count++
 		}
 	}

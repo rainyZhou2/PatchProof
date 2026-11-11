@@ -13,6 +13,11 @@ func (s *Store) CommitAttempt(ctx context.Context, commit domain.AttemptCommit) 
 	if err := commit.Validate(); err != nil {
 		return domain.CommitOutcome{}, err
 	}
+	outputManifest, err := commit.Result.ResolvedOutputManifest()
+	if err != nil {
+		return domain.CommitOutcome{}, err
+	}
+	commit.Result.OutputManifest = outputManifest
 	at := normalizeTime(commit.At)
 
 	evidence := make([]domain.Evidence, len(commit.Result.Evidence))
@@ -90,13 +95,15 @@ func (s *Store) CommitAttempt(ctx context.Context, commit domain.AttemptCommit) 
 	}
 	applyStepOutcome(step, next, commit.Result, delay, at)
 
-	for _, item := range evidence {
-		stored := cloneEvidence(item)
-		s.evidence[item.RunID] = append(s.evidence[item.RunID], stored)
-		s.evidenceIDs[item.ID] = struct{}{}
-	}
-	for _, item := range counterexamples {
-		s.counterexamples[item.RunID] = append(s.counterexamples[item.RunID], cloneCounterexample(item))
+	if next.Terminal() {
+		for _, item := range evidence {
+			stored := cloneEvidence(item)
+			s.evidence[item.RunID] = append(s.evidence[item.RunID], stored)
+			s.evidenceIDs[item.ID] = struct{}{}
+		}
+		for _, item := range counterexamples {
+			s.counterexamples[item.RunID] = append(s.counterexamples[item.RunID], cloneCounterexample(item))
+		}
 	}
 	s.metrics[step.ID] = append(s.metrics[step.ID], metricRecord{
 		tenantID: step.TenantID,
@@ -110,12 +117,25 @@ func (s *Store) CommitAttempt(ctx context.Context, commit domain.AttemptCommit) 
 	if err != nil {
 		return domain.CommitOutcome{}, err
 	}
-	s.appendEventsLocked(append([]domain.OutboxEvent{event}, promotedEvents...))
+	var propagated []domain.Step
+	var propagatedEvents []domain.OutboxEvent
+	if next.Terminal() && next != domain.StepSucceeded {
+		propagated, propagatedEvents, err = s.cancelDependentStepsLocked(state, []domain.StepID{step.ID}, at)
+		if err != nil {
+			return domain.CommitOutcome{}, err
+		}
+	}
+	events := make([]domain.OutboxEvent, 0, 1+len(promotedEvents)+len(propagatedEvents))
+	events = append(events, event)
+	events = append(events, promotedEvents...)
+	events = append(events, propagatedEvents...)
+	s.appendEventsLocked(events)
 	allTerminal := s.allStepsTerminalLocked(state)
 	return domain.CommitOutcome{
 		Step:        cloneStep(*step),
 		Attempt:     cloneAttempt(*attempt),
 		Promoted:    promoted,
+		Propagated:  propagated,
 		AllTerminal: allTerminal,
 		RunStatus:   state.run.Status,
 	}, nil
@@ -170,10 +190,22 @@ func (s *Store) FailAttempt(ctx context.Context, failure domain.AttemptFailure) 
 	attempt.FinishedAt = timePtr(at)
 	applyStepFailure(step, next, failure.ErrorClass, failure.Message, delay, at)
 
-	s.appendEventsLocked([]domain.OutboxEvent{event})
+	var propagated []domain.Step
+	var propagatedEvents []domain.OutboxEvent
+	if next.Terminal() && next != domain.StepSucceeded {
+		propagated, propagatedEvents, err = s.cancelDependentStepsLocked(state, []domain.StepID{step.ID}, at)
+		if err != nil {
+			return domain.CommitOutcome{}, err
+		}
+	}
+	events := make([]domain.OutboxEvent, 0, 1+len(propagatedEvents))
+	events = append(events, event)
+	events = append(events, propagatedEvents...)
+	s.appendEventsLocked(events)
 	return domain.CommitOutcome{
 		Step:        cloneStep(*step),
 		Attempt:     cloneAttempt(*attempt),
+		Propagated:  propagated,
 		AllTerminal: s.allStepsTerminalLocked(state),
 		RunStatus:   state.run.Status,
 	}, nil
@@ -359,6 +391,7 @@ func (s *Store) ExpireLeases(ctx context.Context, now time.Time, limit int) ([]d
 
 	expiries := make([]domain.LeaseExpiry, 0, len(candidates))
 	events := make([]domain.OutboxEvent, 0, len(candidates))
+	failedByRun := make(map[domain.RunID][]domain.StepID)
 	for _, step := range candidates {
 		state := states[step.RunID]
 		attemptID := step.CurrentAttemptID
@@ -428,6 +461,20 @@ func (s *Store) ExpireLeases(ctx context.Context, now time.Time, limit int) ([]d
 			ExpiredAt:  now,
 			Final:      final,
 		})
+		if step.Status.Terminal() && step.Status != domain.StepSucceeded {
+			failedByRun[step.RunID] = append(failedByRun[step.RunID], step.ID)
+		}
+	}
+	for runID, roots := range failedByRun {
+		state, ok := s.runs[runID]
+		if !ok {
+			return nil, wrapInternal("failed step run %s is missing", runID)
+		}
+		_, propagatedEvents, err := s.cancelDependentStepsLocked(state, roots, now)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, propagatedEvents...)
 	}
 	s.appendEventsLocked(events)
 	return expiries, nil

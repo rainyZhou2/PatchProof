@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/patchproof/patchproof/internal/domain"
 )
@@ -271,5 +272,43 @@ func TestInputBindingValidate(t *testing.T) {
 	badRef.Ref = domain.CASRef{Algorithm: "sha256", Digest: strings.Repeat("Z", 64)}
 	if err := badRef.Validate(); err == nil {
 		t.Error("invalid CAS ref should be rejected")
+	}
+}
+
+func TestClusterLiveness(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	cluster := domain.Cluster{ID: "cluster-a", Healthy: true, LastHeartbeat: now.Add(-30 * time.Second)}
+	if !cluster.Live(now, 90*time.Second) {
+		t.Fatal("fresh heartbeat should be live")
+	}
+	cluster.LastHeartbeat = now.Add(-2 * time.Minute)
+	if cluster.Live(now, 90*time.Second) {
+		t.Fatal("stale heartbeat should not be live")
+	}
+	cluster.LastHeartbeat = time.Time{}
+	if cluster.Live(now, 90*time.Second) {
+		t.Fatal("zero heartbeat should not be live")
+	}
+	if !cluster.Live(now, 0) {
+		t.Fatal("disabled staleness check should accept any heartbeat")
+	}
+}
+
+func TestOutputManifestRoundTrip(t *testing.T) {
+	ref := domain.NewCASRef(strings.Repeat("a", 64), 10)
+	raw, err := domain.EncodeOutputManifest(map[string]string{"impact.digest": ref.Hex(), "cases": "12"}, []domain.CASRef{ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := domain.ParseOutputManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := manifest.ArtifactForOutput("impact.digest")
+	if !ok || got.Digest != ref.Digest {
+		t.Fatalf("artifact = %+v, want %+v", got, ref)
+	}
+	if _, ok := manifest.ArtifactForOutput("cases"); ok {
+		t.Fatal("non-digest output must not resolve to an artifact")
 	}
 }

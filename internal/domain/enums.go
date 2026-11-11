@@ -222,15 +222,30 @@ func (r ClaimResult) Valid() bool {
 }
 
 func (r ClaimResult) Satisfies(minimum ClaimResult) bool {
-	rank := map[ClaimResult]int{
-		ClaimInvalidEvidence: 0,
-		ClaimViolated:        0,
-		ClaimNotRun:          1,
-		ClaimUnknown:         1,
-		ClaimTested:          2,
-		ClaimProven:          3,
+	return claimRank(r) >= claimRank(minimum)
+}
+
+// MaxClaimResult returns the stronger of two evidence levels.
+func MaxClaimResult(a, b ClaimResult) ClaimResult {
+	if a.Satisfies(b) {
+		return a
 	}
-	return rank[r] >= rank[minimum]
+	return b
+}
+
+func claimRank(result ClaimResult) int {
+	switch result {
+	case ClaimViolated, ClaimInvalidEvidence:
+		return 0
+	case ClaimNotRun, ClaimUnknown:
+		return 1
+	case ClaimTested:
+		return 2
+	case ClaimProven:
+		return 3
+	default:
+		return 0
+	}
 }
 
 type ClaimKind string

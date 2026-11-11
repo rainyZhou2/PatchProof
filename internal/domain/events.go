@@ -16,6 +16,7 @@ const (
 	EventRunQueued      EventType = "patchproof.run.queued.v1"
 	EventRunStarted     EventType = "patchproof.run.started.v1"
 	EventRunAggregating EventType = "patchproof.run.aggregating.v1"
+	EventRunCancelling  EventType = "patchproof.run.cancelling.v1"
 	EventRunCompleted   EventType = "patchproof.run.completed.v1"
 	EventRunCancelled   EventType = "patchproof.run.cancelled.v1"
 	EventStepReady      EventType = "patchproof.step.ready.v1"
@@ -30,9 +31,9 @@ const (
 
 var eventTypes = []EventType{
 	EventRunCreated, EventRunValidated, EventRunPlanned, EventRunQueued, EventRunStarted,
-	EventRunAggregating, EventRunCompleted, EventRunCancelled, EventStepReady, EventStepLeased,
-	EventStepSucceeded, EventStepFailed, EventStepRetry, EventStepExpired, EventReportReady,
-	EventClusterUpdated,
+	EventRunAggregating, EventRunCancelling, EventRunCompleted, EventRunCancelled, EventStepReady,
+	EventStepLeased, EventStepSucceeded, EventStepFailed, EventStepRetry, EventStepExpired,
+	EventReportReady, EventClusterUpdated,
 }
 
 func (t EventType) Valid() bool {

@@ -30,6 +30,10 @@ func cloneRun(r domain.Run) domain.Run {
 	c.PlannedAt = cloneTime(r.PlannedAt)
 	c.StartedAt = cloneTime(r.StartedAt)
 	c.FinishedAt = cloneTime(r.FinishedAt)
+	if r.Replay != nil {
+		replay := *r.Replay
+		c.Replay = &replay
+	}
 	return c
 }
 

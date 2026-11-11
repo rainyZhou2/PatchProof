@@ -6,8 +6,9 @@ import (
 )
 
 type CreateRunRecord struct {
-	Run    Run           `json:"run"`
-	Events []OutboxEvent `json:"events"`
+	Run           Run           `json:"run"`
+	Events        []OutboxEvent `json:"events"`
+	MaxActiveRuns int           `json:"max_active_runs,omitempty"`
 }
 
 type PlanTransaction struct {

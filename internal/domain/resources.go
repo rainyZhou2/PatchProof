@@ -179,6 +179,18 @@ func (c Cluster) supportsIsolation(required IsolationTier) bool {
 	return false
 }
 
+// Live reports whether the cluster has heartbeated within maxAge. A zero
+// heartbeat is treated as stale so unregistered rows are never scheduled.
+func (c Cluster) Live(now time.Time, maxAge time.Duration) bool {
+	if maxAge <= 0 {
+		return true
+	}
+	if c.LastHeartbeat.IsZero() {
+		return false
+	}
+	return !now.After(c.LastHeartbeat.Add(maxAge))
+}
+
 func (c Cluster) Score(r ResourceRequirements) float64 {
 	if c.MaxConcurrentSteps > 0 && c.ActiveAttempts >= c.MaxConcurrentSteps {
 		return -1

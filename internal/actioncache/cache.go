@@ -19,6 +19,7 @@ type KeyInput struct {
 	CacheEpoch     string
 	StepKind       domain.StepKind
 	Engine         string
+	EngineVersion  string
 	SnapshotDigest string
 	BaseSnapshot   string
 	HeadSnapshot   string
@@ -36,8 +37,13 @@ func Key(input KeyInput) (string, error) {
 	if input.TenantID.Validate() != nil {
 		return "", fmt.Errorf("action cache: invalid tenant")
 	}
-	if !input.StepKind.Valid() || strings.TrimSpace(input.Engine) == "" {
+	engine := strings.TrimSpace(input.Engine)
+	engineVersion := strings.TrimSpace(input.EngineVersion)
+	if !input.StepKind.Valid() || engine == "" {
 		return "", fmt.Errorf("action cache: step kind and engine are required")
+	}
+	if engineVersion == "" {
+		return "", fmt.Errorf("action cache: engine version is required")
 	}
 	options := make(map[string]string, len(input.Options))
 	keys := make([]string, 0, len(input.Options))
@@ -56,6 +62,7 @@ func Key(input KeyInput) (string, error) {
 		CacheEpoch     string   `json:"cache_epoch"`
 		StepKind       string   `json:"step_kind"`
 		Engine         string   `json:"engine"`
+		EngineVersion  string   `json:"engine_version"`
 		SnapshotDigest string   `json:"snapshot_digest"`
 		BaseSnapshot   string   `json:"base_snapshot"`
 		HeadSnapshot   string   `json:"head_snapshot"`
@@ -69,19 +76,21 @@ func Key(input KeyInput) (string, error) {
 		Options        []string `json:"options"`
 	}{
 		Schema: SchemaVersion, Tenant: input.TenantID.String(), CacheEpoch: input.CacheEpoch,
-		StepKind: string(input.StepKind), Engine: input.Engine, SnapshotDigest: input.SnapshotDigest,
-		BaseSnapshot: input.BaseSnapshot, HeadSnapshot: input.HeadSnapshot, PolicyDigest: input.PolicyDigest,
+		StepKind: string(input.StepKind), Engine: engine, EngineVersion: engineVersion,
+		SnapshotDigest: input.SnapshotDigest,
+		BaseSnapshot:   input.BaseSnapshot, HeadSnapshot: input.HeadSnapshot, PolicyDigest: input.PolicyDigest,
 		InputManifest: input.InputManifest, Architecture: input.Architecture, Isolation: input.Isolation,
 		SubjectNetwork: input.SubjectNetwork, RuntimeClass: input.RuntimeClass, WorkerImage: input.WorkerImage,
 		Options: ordered,
 	})
 }
 
-func KeyForStep(step domain.Step, run domain.Run, cacheEpoch, workerImage string) (string, error) {
+func KeyForStep(step domain.Step, run domain.Run, cacheEpoch, engineVersion, workerImage string) (string, error) {
 	return Key(KeyInput{
 		TenantID: step.TenantID, CacheEpoch: cacheEpoch, StepKind: step.Kind,
-		Engine: step.Requirements.Engine, SnapshotDigest: run.SnapshotDigest,
-		BaseSnapshot: run.BaseSnapshot, HeadSnapshot: run.HeadSnapshot, PolicyDigest: run.PolicyDigest,
+		Engine: step.Requirements.Engine, EngineVersion: engineVersion,
+		SnapshotDigest: run.SnapshotDigest,
+		BaseSnapshot:   run.BaseSnapshot, HeadSnapshot: run.HeadSnapshot, PolicyDigest: run.PolicyDigest,
 		InputManifest: step.InputManifestDigest, Architecture: step.Requirements.Architecture,
 		Isolation: string(step.Requirements.Isolation), SubjectNetwork: string(step.Requirements.SubjectNetwork),
 		RuntimeClass: step.Requirements.RuntimeClass, WorkerImage: workerImage, Options: step.Options,
@@ -142,6 +151,7 @@ func NewEntry(tenantID domain.TenantID, actionKey string, step domain.Step, engi
 func CloneForStep(entry domain.ActionCacheEntry, runID domain.RunID, stepID domain.StepID, tenantID domain.TenantID, now time.Time) (domain.StepResult, error) {
 	result := cloneResult(entry.Result)
 	result.Outcome = domain.OutcomeSucceeded
+	result.Metrics = domain.StepMetrics{}
 	for i := range result.Evidence {
 		item := &result.Evidence[i]
 		item.ID = domain.NewEvidenceID()

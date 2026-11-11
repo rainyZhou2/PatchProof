@@ -36,12 +36,34 @@ func (s *Store) AcquireLease(ctx context.Context, request domain.LeaseRequest) (
 		}
 	}()
 
-	runStatus, err := lookupRunStatus(ctx, tx, request.TenantID, request.RunID)
+	runStatus, err := lockRunStatus(ctx, tx, request.TenantID, request.RunID)
 	if err != nil {
 		return domain.Lease{}, err
 	}
 	if runStatus.Terminal() || runStatus == domain.RunCancelling {
 		return domain.Lease{}, &domain.LeaseError{StepID: request.StepID, Reason: "run is not active"}
+	}
+	if request.MaxParallelSteps > 0 {
+		var active int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM steps
+			WHERE tenant_id = $1::uuid AND run_id = $2::uuid AND status IN ('LEASED', 'RUNNING')`,
+			request.TenantID.String(), request.RunID.String()).Scan(&active); err != nil {
+			return domain.Lease{}, mapError(err, "step", request.StepID.String())
+		}
+		if active >= request.MaxParallelSteps {
+			return domain.Lease{}, &domain.LeaseError{StepID: request.StepID, Reason: "run parallel step budget is exhausted"}
+		}
+	}
+	if request.MaxCPUSeconds > 0 {
+		var used float64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(cpu_seconds), 0) FROM step_metrics
+			WHERE tenant_id = $1::uuid AND run_id = $2::uuid`,
+			request.TenantID.String(), request.RunID.String()).Scan(&used); err != nil {
+			return domain.Lease{}, mapError(err, "step", request.StepID.String())
+		}
+		if used >= request.MaxCPUSeconds {
+			return domain.Lease{}, &domain.LeaseError{StepID: request.StepID, Reason: "run CPU budget is exhausted"}
+		}
 	}
 	var attemptExists bool
 	if err := tx.QueryRow(ctx,
@@ -320,6 +342,10 @@ func (s *Store) CommitAttempt(ctx context.Context, commit domain.AttemptCommit) 
 	if nextStatus.Terminal() {
 		stepFinishedAt = finishedAt
 	}
+	outputManifest, err := result.ResolvedOutputManifest()
+	if err != nil {
+		return domain.CommitOutcome{}, err
+	}
 	updatedStep, err := scanStep(tx.QueryRow(ctx, `UPDATE steps SET
 		status = $2, result_digest = $3, output_manifest = $4,
 		failure_class = $5, failure_message = $6, next_attempt_at = $7,
@@ -327,7 +353,7 @@ func (s *Store) CommitAttempt(ctx context.Context, commit domain.AttemptCommit) 
 		started_at = COALESCE(started_at, $8), finished_at = $9, updated_at = $8
 		WHERE step_id = $1::uuid AND created_at = $10
 		RETURNING `+stepColumns,
-		ref.StepID.String(), string(nextStatus), result.ResultDigest, result.OutputManifest,
+		ref.StepID.String(), string(nextStatus), result.ResultDigest, outputManifest,
 		string(class), result.Message, nextAttemptAt, at, stepFinishedAt, step.CreatedAt,
 	))
 	if err != nil {
@@ -343,13 +369,15 @@ func (s *Store) CommitAttempt(ctx context.Context, commit domain.AttemptCommit) 
 		Attempt:   updatedAttempt,
 		RunStatus: runStatus,
 	}
-	if nextStatus == domain.StepSucceeded {
+	if nextStatus.Terminal() {
 		if err := insertCommitEvidence(ctx, tx, updatedStep, result.Evidence, at); err != nil {
 			return domain.CommitOutcome{}, err
 		}
 		if err := insertCounterexamples(ctx, tx, updatedStep, result.Counterexamples, at); err != nil {
 			return domain.CommitOutcome{}, err
 		}
+	}
+	if nextStatus == domain.StepSucceeded {
 		promoted, err := promoteDependents(ctx, tx, updatedStep, at)
 		if err != nil {
 			return domain.CommitOutcome{}, err
@@ -368,7 +396,16 @@ func (s *Store) CommitAttempt(ctx context.Context, commit domain.AttemptCommit) 
 	if err != nil {
 		return domain.CommitOutcome{}, err
 	}
-	if err := insertOutbox(ctx, tx, []domain.OutboxEvent{event}); err != nil {
+	events := []domain.OutboxEvent{event}
+	if nextStatus.Terminal() && nextStatus != domain.StepSucceeded {
+		propagated, propagatedEvents, err := cancelDependentSteps(ctx, tx, updatedStep.TenantID, updatedStep.RunID, []domain.StepID{updatedStep.ID}, at)
+		if err != nil {
+			return domain.CommitOutcome{}, err
+		}
+		outcome.Propagated = propagated
+		events = append(events, propagatedEvents...)
+	}
+	if err := insertOutbox(ctx, tx, events); err != nil {
 		return domain.CommitOutcome{}, err
 	}
 
@@ -489,7 +526,17 @@ func (s *Store) FailAttempt(ctx context.Context, failure domain.AttemptFailure) 
 	if err != nil {
 		return domain.CommitOutcome{}, err
 	}
-	if err := insertOutbox(ctx, tx, []domain.OutboxEvent{event}); err != nil {
+	events := []domain.OutboxEvent{event}
+	var propagated []domain.Step
+	if nextStatus.Terminal() && nextStatus != domain.StepSucceeded {
+		var propagatedEvents []domain.OutboxEvent
+		propagated, propagatedEvents, err = cancelDependentSteps(ctx, tx, updatedStep.TenantID, updatedStep.RunID, []domain.StepID{updatedStep.ID}, at)
+		if err != nil {
+			return domain.CommitOutcome{}, err
+		}
+		events = append(events, propagatedEvents...)
+	}
+	if err := insertOutbox(ctx, tx, events); err != nil {
 		return domain.CommitOutcome{}, err
 	}
 	allTerminal, err := allStepsTerminal(ctx, tx, updatedStep.TenantID, updatedStep.RunID)
@@ -503,6 +550,7 @@ func (s *Store) FailAttempt(ctx context.Context, failure domain.AttemptFailure) 
 	return domain.CommitOutcome{
 		Step:        updatedStep,
 		Attempt:     updatedAttempt,
+		Propagated:  propagated,
 		AllTerminal: allTerminal,
 		RunStatus:   runStatus,
 	}, nil
@@ -542,6 +590,10 @@ func (s *Store) ExpireLeases(ctx context.Context, now time.Time, limit int) ([]d
 
 	expiries := make([]domain.LeaseExpiry, 0, len(steps))
 	events := make([]domain.OutboxEvent, 0, len(steps))
+	failedByRun := make(map[domain.RunID]struct {
+		tenant domain.TenantID
+		steps  []domain.StepID
+	})
 	for _, step := range steps {
 		final := step.AttemptCount >= step.MaxAttempts
 		attemptID := step.CurrentAttemptID
@@ -594,6 +646,19 @@ func (s *Store) ExpireLeases(ctx context.Context, now time.Time, limit int) ([]d
 			ExpiredAt:  now,
 			Final:      final,
 		})
+		if final {
+			group := failedByRun[updated.RunID]
+			group.tenant = updated.TenantID
+			group.steps = append(group.steps, updated.ID)
+			failedByRun[updated.RunID] = group
+		}
+	}
+	for runID, group := range failedByRun {
+		_, propagatedEvents, err := cancelDependentSteps(ctx, tx, group.tenant, runID, group.steps, now)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, propagatedEvents...)
 	}
 	if err := insertOutbox(ctx, tx, events); err != nil {
 		return nil, err
@@ -760,15 +825,15 @@ func recordStepMetrics(ctx context.Context, q querier, step domain.Step, metrics
 	) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	ON CONFLICT (step_id) DO UPDATE SET
 		step_kind = EXCLUDED.step_kind,
-		cpu_seconds = EXCLUDED.cpu_seconds,
-		memory_gib_seconds = EXCLUDED.memory_gib_seconds,
-		ephemeral_disk_gib_seconds = EXCLUDED.ephemeral_disk_gib_seconds,
-		egress_bytes = EXCLUDED.egress_bytes,
-		cas_written_bytes = EXCLUDED.cas_written_bytes,
-		queue_wait_ms = EXCLUDED.queue_wait_ms,
-		execution_ms = EXCLUDED.execution_ms,
-		upload_ms = EXCLUDED.upload_ms,
-		created_at = EXCLUDED.created_at`,
+		cpu_seconds = step_metrics.cpu_seconds + EXCLUDED.cpu_seconds,
+		memory_gib_seconds = step_metrics.memory_gib_seconds + EXCLUDED.memory_gib_seconds,
+		ephemeral_disk_gib_seconds = step_metrics.ephemeral_disk_gib_seconds + EXCLUDED.ephemeral_disk_gib_seconds,
+		egress_bytes = step_metrics.egress_bytes + EXCLUDED.egress_bytes,
+		cas_written_bytes = step_metrics.cas_written_bytes + EXCLUDED.cas_written_bytes,
+		queue_wait_ms = step_metrics.queue_wait_ms + EXCLUDED.queue_wait_ms,
+		execution_ms = step_metrics.execution_ms + EXCLUDED.execution_ms,
+		upload_ms = step_metrics.upload_ms + EXCLUDED.upload_ms,
+		created_at = LEAST(step_metrics.created_at, EXCLUDED.created_at)`,
 		step.ID.String(), step.RunID.String(), step.TenantID.String(), string(step.Kind),
 		metrics.CPUSeconds, metrics.MemoryGiBSeconds, metrics.EphemeralDiskGiBSeconds,
 		metrics.EgressBytes, metrics.CASWrittenBytes, metrics.QueueWaitMS,

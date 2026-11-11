@@ -13,8 +13,8 @@ import (
 )
 
 // CreateRun atomically inserts a run, its idempotency key, and its outbox
-// events. A repeated request key with the same fingerprint returns the
-// existing run.
+// events. A repeated request key with the same fingerprint returns the active
+// run; once the previous run is terminal the key is reassigned to the new run.
 func (s *Store) CreateRun(ctx context.Context, record domain.CreateRunRecord) (domain.Run, error) {
 	run := record.Run
 	if err := run.Validate(); err != nil {
@@ -46,6 +46,14 @@ func (s *Store) CreateRun(ctx context.Context, record domain.CreateRunRecord) (d
 	if err != nil {
 		return domain.Run{}, err
 	}
+	var replay any
+	if run.Replay != nil {
+		encoded, err := encodeJSON(run.Replay.Normalized())
+		if err != nil {
+			return domain.Run{}, err
+		}
+		replay = encoded
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -58,6 +66,10 @@ func (s *Store) CreateRun(ctx context.Context, record domain.CreateRunRecord) (d
 		}
 	}()
 
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, run.TenantID.String()); err != nil {
+		return domain.Run{}, fmt.Errorf("lock run admission: %w", err)
+	}
+
 	var reservedRunID string
 	err = tx.QueryRow(ctx, `INSERT INTO run_request_keys (
 		tenant_id, project_id, request_key, run_id, created_at
@@ -69,35 +81,56 @@ func (s *Store) CreateRun(ctx context.Context, record domain.CreateRunRecord) (d
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return domain.Run{}, mapError(err, "run", run.ID.String())
 	}
+	var supersededID string
 	if errors.Is(err, pgx.ErrNoRows) {
-		if err := tx.Rollback(ctx); err != nil {
-			return domain.Run{}, fmt.Errorf("rollback duplicate create run: %w", err)
+		if err := tx.QueryRow(ctx, `SELECT run_id::text FROM run_request_keys
+			WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND request_key = $3
+			FOR UPDATE`,
+			run.TenantID.String(), run.ProjectID.String(), run.RequestKey,
+		).Scan(&supersededID); err != nil {
+			return domain.Run{}, mapError(err, "run", run.ID.String())
 		}
-		finished = true
-		return s.existingRunForKey(ctx, run)
+		existing, err := scanRun(tx.QueryRow(ctx,
+			"SELECT "+runColumns+" FROM runs WHERE run_id = $1::uuid AND tenant_id = $2::uuid",
+			supersededID, run.TenantID.String()))
+		if err != nil {
+			return domain.Run{}, mapError(err, "run", supersededID)
+		}
+		if existing.Fingerprint != run.Fingerprint {
+			return domain.Run{}, &domain.IdempotencyConflictError{RequestKey: run.RequestKey}
+		}
+		if !existing.Status.Terminal() {
+			if err := tx.Commit(ctx); err != nil {
+				return domain.Run{}, fmt.Errorf("commit idempotent create run: %w", err)
+			}
+			finished = true
+			return existing, nil
+		}
 	}
 
-	if _, err := tx.Exec(ctx, `INSERT INTO runs (
-		run_id, tenant_id, project_id, request_key, fingerprint, base_commit, head_commit,
-		patch_digest, snapshot_digest, base_snapshot, head_snapshot, policy_digest,
-		policy_ref, requested_checks, budget, status, verdict, state_version,
-		failure_class, failure_message, region, created_by, created_at, updated_at,
-		planned_at, started_at, finished_at
-	) VALUES (
-		$1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-		$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
-	)`,
-		run.ID.String(), run.TenantID.String(), run.ProjectID.String(), run.RequestKey,
-		run.Fingerprint, run.BaseCommit, run.HeadCommit, run.PatchDigest, run.SnapshotDigest,
-		run.BaseSnapshot, run.HeadSnapshot, run.PolicyDigest, run.PolicyRef, requested,
-		budget, string(run.Status), string(run.Verdict), run.StateVersion,
-		string(run.FailureClass), run.FailureMessage, run.Region, run.CreatedBy,
-		run.CreatedAt, run.UpdatedAt, utcPtr(run.PlannedAt), utcPtr(run.StartedAt),
-		utcPtr(run.FinishedAt),
-	); err != nil {
-		return domain.Run{}, mapError(err, "run", run.ID.String())
+	if record.MaxActiveRuns > 0 {
+		var active int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM runs
+			WHERE tenant_id = $1::uuid AND status NOT IN `+terminalRunStatusesSQL,
+			run.TenantID.String()).Scan(&active); err != nil {
+			return domain.Run{}, mapError(err, "run", run.ID.String())
+		}
+		if active >= record.MaxActiveRuns {
+			return domain.Run{}, fmt.Errorf("%w: tenant already has %d active runs", domain.ErrQuotaExceeded, active)
+		}
 	}
 
+	if err := insertRunTx(ctx, tx, run, requested, budget, replay); err != nil {
+		return domain.Run{}, err
+	}
+	if supersededID != "" {
+		if _, err := tx.Exec(ctx, `UPDATE run_request_keys SET run_id = $4::uuid, created_at = $5
+			WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND request_key = $3`,
+			run.TenantID.String(), run.ProjectID.String(), run.RequestKey, run.ID.String(), run.CreatedAt,
+		); err != nil {
+			return domain.Run{}, mapError(err, "run", run.ID.String())
+		}
+	}
 	if err := insertOutbox(ctx, tx, record.Events); err != nil {
 		return domain.Run{}, err
 	}
@@ -108,24 +141,28 @@ func (s *Store) CreateRun(ctx context.Context, record domain.CreateRunRecord) (d
 	return run, nil
 }
 
-func (s *Store) existingRunForKey(ctx context.Context, run domain.Run) (domain.Run, error) {
-	var existingID string
-	if err := s.pool.QueryRow(ctx, `SELECT run_id::text FROM run_request_keys
-		WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND request_key = $3`,
-		run.TenantID.String(), run.ProjectID.String(), run.RequestKey,
-	).Scan(&existingID); err != nil {
-		return domain.Run{}, mapError(err, "run", run.ID.String())
+func insertRunTx(ctx context.Context, tx pgx.Tx, run domain.Run, requested, budget, replay any) error {
+	if _, err := tx.Exec(ctx, `INSERT INTO runs (
+		run_id, tenant_id, project_id, request_key, fingerprint, base_commit, head_commit,
+		patch_digest, snapshot_digest, base_snapshot, head_snapshot, policy_digest,
+		policy_ref, requested_checks, budget, replay, status, verdict, state_version,
+		failure_class, failure_message, region, created_by, created_at, updated_at,
+		planned_at, started_at, finished_at
+	) VALUES (
+		$1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+		$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+	)`,
+		run.ID.String(), run.TenantID.String(), run.ProjectID.String(), run.RequestKey,
+		run.Fingerprint, run.BaseCommit, run.HeadCommit, run.PatchDigest, run.SnapshotDigest,
+		run.BaseSnapshot, run.HeadSnapshot, run.PolicyDigest, run.PolicyRef, requested,
+		budget, replay, string(run.Status), string(run.Verdict), run.StateVersion,
+		string(run.FailureClass), run.FailureMessage, run.Region, run.CreatedBy,
+		run.CreatedAt, run.UpdatedAt, utcPtr(run.PlannedAt), utcPtr(run.StartedAt),
+		utcPtr(run.FinishedAt),
+	); err != nil {
+		return mapError(err, "run", run.ID.String())
 	}
-	existing, err := scanRun(s.pool.QueryRow(ctx,
-		"SELECT "+runColumns+" FROM runs WHERE run_id = $1::uuid AND tenant_id = $2::uuid",
-		existingID, run.TenantID.String()))
-	if err != nil {
-		return domain.Run{}, mapError(err, "run", existingID)
-	}
-	if existing.Fingerprint != run.Fingerprint {
-		return domain.Run{}, &domain.IdempotencyConflictError{RequestKey: run.RequestKey}
-	}
-	return existing, nil
+	return nil
 }
 
 // GetRun loads a run scoped to its tenant.
