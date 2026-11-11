@@ -111,6 +111,8 @@ func TestClusterSupports(t *testing.T) {
 		{"at max concurrency", func(c *domain.Cluster, _ *domain.ResourceRequirements) { c.ActiveAttempts = c.MaxConcurrentSteps }, false},
 		{"insufficient cpu", func(c *domain.Cluster, _ *domain.ResourceRequirements) { c.AvailableCPUMilli = 999 }, false},
 		{"insufficient memory", func(c *domain.Cluster, _ *domain.ResourceRequirements) { c.AvailableMemoryMiB = 2047 }, false},
+		{"unknown cpu capacity", func(c *domain.Cluster, _ *domain.ResourceRequirements) { c.AvailableCPUMilli = 0 }, true},
+		{"unknown memory capacity", func(c *domain.Cluster, _ *domain.ResourceRequirements) { c.AvailableMemoryMiB = 0 }, true},
 		{"architecture mismatch", func(c *domain.Cluster, _ *domain.ResourceRequirements) { c.Architectures = []string{"arm64"} }, false},
 		{"architecture case insensitive", func(c *domain.Cluster, r *domain.ResourceRequirements) {
 			c.Architectures = []string{"AMD64"}
@@ -212,6 +214,16 @@ func TestClusterScoreOrdering(t *testing.T) {
 	saturated.ActiveAttempts = 5
 	if got := saturated.Score(requirements); got != -1 {
 		t.Fatalf("saturated cluster score = %v, want -1", got)
+	}
+
+	unknown := validCluster()
+	unknown.AvailableCPUMilli = 0
+	unknown.AvailableMemoryMiB = 0
+	if score := unknown.Score(requirements); score < 0 {
+		t.Fatalf("cluster with unknown capacity scored %.3f, want non-negative", score)
+	}
+	if !unknown.Supports(requirements) {
+		t.Fatal("cluster with unknown capacity should not be rejected")
 	}
 
 	// Same cluster, locality only: a matching CAS region must score higher.

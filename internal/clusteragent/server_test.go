@@ -493,7 +493,7 @@ func TestHeartbeatAndShutdown(t *testing.T) {
 	if cluster.LastHeartbeat.IsZero() {
 		t.Fatal("heartbeat must set the last heartbeat time")
 	}
-	if cluster.ExecutorKind != "kubernetes" {
+	if cluster.ExecutorKind != "remote" {
 		t.Fatalf("executor kind = %q", cluster.ExecutorKind)
 	}
 	if len(cluster.Languages) != 1 || cluster.Languages[0] != "go" {

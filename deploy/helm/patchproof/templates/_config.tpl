@@ -106,9 +106,11 @@ execution:
   allowFileRepositories: {{ $root.Values.execution.allowFileRepositories }}
   allowFullFetch: {{ $root.Values.execution.allowFullFetch }}
   automountWorkerToken: {{ $root.Values.execution.automountWorkerToken }}
-  {{- with $root.Values.execution.agentEndpoint }}
-  agentEndpoint: {{ . | quote }}
+  {{- $agentEndpoint := $root.Values.execution.agentEndpoint }}
+  {{- if not $agentEndpoint }}
+  {{- $agentEndpoint = printf "http://%s-cluster-agent.%s.svc:%v" (include "patchproof.fullname" $root) $root.Release.Namespace $root.Values.clusterAgent.service.port }}
   {{- end }}
+  agentEndpoint: {{ $agentEndpoint | quote }}
   {{- with $root.Values.execution.supportedIsolationTiers }}
   supportedIsolationTiers:
     {{- range . }}

@@ -140,7 +140,14 @@ func (c Cluster) Supports(r ResourceRequirements) bool {
 	if c.MaxConcurrentSteps > 0 && c.ActiveAttempts >= c.MaxConcurrentSteps {
 		return false
 	}
-	if c.AvailableCPUMilli < r.CPUMilli || c.AvailableMemoryMiB < r.MemoryMiB {
+	// Capacity is advisory. Cluster agents do not currently report free
+	// CPU/memory, so a zero value means "unknown" rather than "no capacity";
+	// treating it as zero would make every agent-registered cluster
+	// unschedulable. Explicit positive values are still enforced.
+	if c.AvailableCPUMilli > 0 && c.AvailableCPUMilli < r.CPUMilli {
+		return false
+	}
+	if c.AvailableMemoryMiB > 0 && c.AvailableMemoryMiB < r.MemoryMiB {
 		return false
 	}
 	if !containsFold(c.Architectures, r.Architecture) {
@@ -195,8 +202,16 @@ func (c Cluster) Score(r ResourceRequirements) float64 {
 	if c.MaxConcurrentSteps > 0 && c.ActiveAttempts >= c.MaxConcurrentSteps {
 		return -1
 	}
-	cpuHeadroom := float64(c.AvailableCPUMilli-r.CPUMilli) / float64(maxInt64(c.AvailableCPUMilli, 1))
-	memHeadroom := float64(c.AvailableMemoryMiB-r.MemoryMiB) / float64(maxInt64(c.AvailableMemoryMiB, 1))
+	// Unknown capacity (zero) contributes a neutral headroom term instead of a
+	// large negative score. Positive values keep the existing headroom ranking.
+	cpuHeadroom := 0.5
+	if c.AvailableCPUMilli > 0 {
+		cpuHeadroom = float64(c.AvailableCPUMilli-r.CPUMilli) / float64(c.AvailableCPUMilli)
+	}
+	memHeadroom := 0.5
+	if c.AvailableMemoryMiB > 0 {
+		memHeadroom = float64(c.AvailableMemoryMiB-r.MemoryMiB) / float64(c.AvailableMemoryMiB)
+	}
 	locality := 0.0
 	if r.Region == "" || strings.EqualFold(r.Region, c.CasRegion) {
 		locality = 1
@@ -217,13 +232,6 @@ func containsFold(values []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 type StepSpec struct {

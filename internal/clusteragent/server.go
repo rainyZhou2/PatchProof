@@ -557,8 +557,13 @@ func (s *Server) heartbeat(parent context.Context) {
 }
 
 func mergeCapabilities(cluster *domain.Cluster, capabilities ports.ExecutorCapabilities) {
-	if capabilities.ExecutorKind != "" {
-		cluster.ExecutorKind = capabilities.ExecutorKind
+	// A cluster agent always executes over the remote transport. The executor
+	// it wraps reports its local kind (for example "kubernetes"); overwriting
+	// the registration with that value makes the control plane believe it owns
+	// the cluster and bypass the agent. Keep an explicitly declared kind, and
+	// otherwise register the agent as a remote executor.
+	if cluster.ExecutorKind == "" {
+		cluster.ExecutorKind = "remote"
 	}
 	if cluster.Region == "" && capabilities.Region != "" {
 		cluster.Region = capabilities.Region
