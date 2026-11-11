@@ -355,12 +355,15 @@ func (c *keyCache) Get(ctx context.Context, keyID string) ([]crypto.PublicKey, e
 	fresh := c.now().Before(c.expiresAt)
 	all := c.keys
 	c.mu.RUnlock()
-	if ok {
+	if ok && fresh {
 		return []crypto.PublicKey{key}, nil
 	}
 	if fresh && keyID == "" && len(all) > 0 {
 		return all, nil
 	}
+	// A cached key must not outlive its TTL. Refreshing here makes key
+	// rotation/removal effective even when the presented token still names a
+	// known kid; otherwise a removed key would be accepted indefinitely.
 	return c.Refresh(ctx, keyID)
 }
 

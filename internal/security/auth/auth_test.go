@@ -735,3 +735,28 @@ func TestPrincipalHelpers(t *testing.T) {
 		t.Fatal("HasScope should be exact and case-sensitive")
 	}
 }
+
+func TestOIDCJWKSRemovedKeyRejectedAfterTTL(t *testing.T) {
+	fixed := time.Date(2026, 4, 5, 6, 7, 8, 0, time.UTC)
+	oldKey := newRSAKey(t, "removed-1")
+	newKey := newRSAKey(t, "replacement-1")
+	server := newJWKSServer(t, jwksJSON(t, oldKey))
+	current := fixed
+	authenticator := newOIDCAuthenticator(t, server.url(), func() time.Time { return current }, time.Minute)
+
+	oldToken := signedJWT(t, oldKey, baseClaims(fixed))
+	if _, err := authenticator.Authenticate(t.Context(), bearerRequest(oldToken)); err != nil {
+		t.Fatalf("Authenticate old token: %v", err)
+	}
+
+	// The trusted key is removed from JWKS while the old token is still fresh
+	// from the signer's perspective. Once the cache TTL elapses, the removed
+	// key must no longer authenticate.
+	server.setBody(jwksJSON(t, newKey))
+	current = fixed.Add(2 * time.Minute)
+	if _, err := authenticator.Authenticate(t.Context(), bearerRequest(oldToken)); err == nil {
+		t.Fatal("token signed by a removed key was accepted after the JWKS cache TTL")
+	} else {
+		requireTokenError(t, err, "signature verification failed")
+	}
+}
