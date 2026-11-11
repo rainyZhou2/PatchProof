@@ -1005,17 +1005,32 @@ func TestEvidenceAndReport(t *testing.T) {
 		t.Fatal("report was mutated through a returned value")
 	}
 
+	// Reports are immutable: writing the same report id again is a no-op.
+	mutated := report
+	mutated.Verdict = domain.VerdictInconclusive
+	if err := f.store.PutReport(ctx, mutated); err != nil {
+		t.Fatalf("put mutated report: %v", err)
+	}
+	stored, err = f.store.GetReport(ctx, run.TenantID, run.ID)
+	if err != nil {
+		t.Fatalf("get report: %v", err)
+	}
+	if stored.ReportID != report.ReportID || stored.Verdict != report.Verdict {
+		t.Fatal("storing the same report id mutated the stored report")
+	}
+
 	updated := report
 	updated.ReportID = domain.NewReportID()
+	updated.GeneratedAt = report.GeneratedAt.Add(time.Second)
 	if err := f.store.PutReport(ctx, updated); err != nil {
-		t.Fatalf("upsert report: %v", err)
+		t.Fatalf("put report version: %v", err)
 	}
 	stored, err = f.store.GetReport(ctx, run.TenantID, run.ID)
 	if err != nil {
 		t.Fatalf("get report: %v", err)
 	}
 	if stored.ReportID != updated.ReportID {
-		t.Fatal("report upsert did not replace the stored report")
+		t.Fatal("new report version was not selected as latest")
 	}
 }
 
@@ -1156,21 +1171,21 @@ func TestClusterAndShardLeases(t *testing.T) {
 	}
 
 	now := testNow
-	first, err := f.store.AcquireShardLeases(ctx, []int{2, 1, 2}, "owner-a", 10*time.Second, now)
+	first, err := f.store.AcquireShardLeases(ctx, []int{2, 1, 2}, "owner-a", 10*time.Second, now, 0)
 	if err != nil {
 		t.Fatalf("acquire shard leases: %v", err)
 	}
 	if len(first) != 2 || first[0] != 1 || first[1] != 2 {
 		t.Fatalf("expected sorted unique shards [1 2], got %v", first)
 	}
-	blocked, err := f.store.AcquireShardLeases(ctx, []int{1, 2, 3}, "owner-b", 10*time.Second, now.Add(time.Second))
+	blocked, err := f.store.AcquireShardLeases(ctx, []int{1, 2, 3}, "owner-b", 10*time.Second, now.Add(time.Second), 0)
 	if err != nil {
 		t.Fatalf("acquire shard leases: %v", err)
 	}
 	if len(blocked) != 1 || blocked[0] != 3 {
 		t.Fatalf("expected only shard 3 for the second owner, got %v", blocked)
 	}
-	afterExpiry, err := f.store.AcquireShardLeases(ctx, []int{1, 2}, "owner-b", 10*time.Second, now.Add(10*time.Second))
+	afterExpiry, err := f.store.AcquireShardLeases(ctx, []int{1, 2}, "owner-b", 10*time.Second, now.Add(10*time.Second), 0)
 	if err != nil {
 		t.Fatalf("acquire expired shard leases: %v", err)
 	}
@@ -1180,7 +1195,7 @@ func TestClusterAndShardLeases(t *testing.T) {
 	if err := f.store.ReleaseShardLeases(ctx, "owner-b"); err != nil {
 		t.Fatalf("release shard leases: %v", err)
 	}
-	released, err := f.store.AcquireShardLeases(ctx, []int{1, 2}, "owner-c", 10*time.Second, now.Add(11*time.Second))
+	released, err := f.store.AcquireShardLeases(ctx, []int{1, 2}, "owner-c", 10*time.Second, now.Add(11*time.Second), 0)
 	if err != nil {
 		t.Fatalf("acquire after release: %v", err)
 	}
@@ -1585,5 +1600,31 @@ func TestLeaseEnforcesRunCPUBudget(t *testing.T) {
 	var leaseErr *domain.LeaseError
 	if !errors.As(err, &leaseErr) {
 		t.Fatalf("expected CPU budget lease error, got %v", err)
+	}
+}
+
+func TestAcquireShardLeasesHonorsLimitForFairSharing(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	now := testNow
+	shards := []int{0, 1, 2, 3, 4, 5}
+
+	first, err := f.store.AcquireShardLeases(ctx, shards, "owner-a", 10*time.Second, now, 2)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	second, err := f.store.AcquireShardLeases(ctx, shards, "owner-b", 10*time.Second, now, 2)
+	if err != nil {
+		t.Fatalf("second acquire: %v", err)
+	}
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("claims = %v / %v, want two shards each", first, second)
+	}
+	for _, shard := range first {
+		for _, other := range second {
+			if shard == other {
+				t.Fatalf("owners share shard %d", shard)
+			}
+		}
 	}
 }

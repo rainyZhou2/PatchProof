@@ -141,7 +141,7 @@ func TestScanOutboxEvent(t *testing.T) {
 	occurredAt := time.Date(2026, 4, 1, 11, 0, 0, 0, time.UTC)
 	row := fakeRow{values: []any{
 		eventID, tenantID, "patchproof.step.leased.v1", "step-1", runID, int64(2),
-		occurredAt, "trace-parent", []byte(`{"step_id":"step-1"}`), nil, 3,
+		occurredAt, "trace-parent", []byte(`{"step_id":"step-1"}`), nil, nil, 3,
 	}}
 	event, err := scanOutboxEvent(row)
 	if err != nil {

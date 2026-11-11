@@ -112,7 +112,8 @@ func (s *Store) ListCounterexamples(ctx context.Context, tenantID domain.TenantI
 	return collectCounterexamples(rows)
 }
 
-// PutReport stores the latest report for a run.
+// PutReport stores an immutable report version for a run. Storing the same
+// report id again is a no-op; re-aggregation produces a new report id.
 func (s *Store) PutReport(ctx context.Context, report domain.Report) error {
 	if err := report.Validate(); err != nil {
 		return err
@@ -140,16 +141,7 @@ func (s *Store) PutReport(ctx context.Context, report domain.Report) error {
 		run_id, tenant_id, project_id, report_id, verdict, attestation_status, merkle_root,
 		document, created_at, updated_at
 	) VALUES ($1::uuid, $2::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, $8, $9, $9)
-	ON CONFLICT (run_id) DO UPDATE SET
-		tenant_id = EXCLUDED.tenant_id,
-		project_id = EXCLUDED.project_id,
-		report_id = EXCLUDED.report_id,
-		verdict = EXCLUDED.verdict,
-		attestation_status = EXCLUDED.attestation_status,
-		merkle_root = EXCLUDED.merkle_root,
-		document = EXCLUDED.document,
-		created_at = EXCLUDED.created_at,
-		updated_at = EXCLUDED.updated_at`,
+	ON CONFLICT (run_id, report_id) DO NOTHING`,
 		report.RunID.String(), report.TenantID.String(), report.ProjectID.String(),
 		report.ReportID.String(), string(report.Verdict), string(report.Attestation),
 		report.MerkleRoot, raw, generatedAt,
@@ -169,7 +161,7 @@ func (s *Store) GetReport(ctx context.Context, tenantID domain.TenantID, runID d
 		return domain.Report{}, err
 	}
 	report, err := scanReport(s.pool.QueryRow(ctx,
-		"SELECT document FROM reports WHERE tenant_id = $1::uuid AND run_id = $2::uuid",
+		"SELECT document FROM reports WHERE tenant_id = $1::uuid AND run_id = $2::uuid ORDER BY created_at DESC, report_id DESC LIMIT 1",
 		tenantID.String(), runID.String()))
 	if err != nil {
 		return domain.Report{}, mapError(err, "report", runID.String())

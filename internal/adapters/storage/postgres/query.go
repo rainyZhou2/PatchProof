@@ -43,7 +43,7 @@ const policyColumns = `tenant_id::text, COALESCE(project_id::text, ''), digest, 
 
 const outboxColumns = `event_id::text, tenant_id::text, event_type, aggregate_id,
 	COALESCE(run_id::text, ''), generation, created_at, traceparent, payload, delivered_at,
-	delivery_attempts`
+	dead_lettered_at, delivery_attempts`
 
 const clusterColumns = `cluster_id, region, availability_zone, executor_kind, endpoint, namespace,
 	architectures, languages, engines, isolation_tiers, runtime_classes, available_cpu_milli,
@@ -304,18 +304,19 @@ func scanReport(row scanner) (domain.Report, error) {
 
 func scanOutboxEvent(row scanner) (domain.OutboxEvent, error) {
 	var (
-		event       domain.OutboxEvent
-		eventID     string
-		tenantID    string
-		eventType   string
-		runID       string
-		payload     []byte
-		deliveredAt *time.Time
+		event          domain.OutboxEvent
+		eventID        string
+		tenantID       string
+		eventType      string
+		runID          string
+		payload        []byte
+		deliveredAt    *time.Time
+		deadLetteredAt *time.Time
 	)
 	if err := row.Scan(
 		&eventID, &tenantID, &eventType, &event.AggregateID, &runID,
 		&event.Generation, &event.OccurredAt, &event.TraceParent, &payload,
-		&deliveredAt, &event.Attempts,
+		&deliveredAt, &deadLetteredAt, &event.Attempts,
 	); err != nil {
 		return domain.OutboxEvent{}, err
 	}
@@ -325,6 +326,7 @@ func scanOutboxEvent(row scanner) (domain.OutboxEvent, error) {
 	event.RunID = domain.RunID(runID)
 	event.OccurredAt = event.OccurredAt.UTC()
 	event.DeliveredAt = utcPtr(deliveredAt)
+	event.DeadLetteredAt = utcPtr(deadLetteredAt)
 	event.Payload = payload
 	return event, nil
 }

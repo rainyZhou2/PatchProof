@@ -18,7 +18,7 @@ func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]domain.OutboxEv
 	}
 	pending := make([]domain.OutboxEvent, 0)
 	for _, event := range s.outbox {
-		if event.DeliveredAt != nil {
+		if event.DeliveredAt != nil || event.DeadLetteredAt != nil {
 			continue
 		}
 		pending = append(pending, cloneOutboxEvent(*event))
@@ -33,6 +33,28 @@ func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]domain.OutboxEv
 		pending = pending[:limit]
 	}
 	return pending, nil
+}
+
+// MarkOutboxDeadLettered stops retrying events permanently. The reason is
+// retained by the preceding RecordOutboxFailure call.
+func (s *Store) MarkOutboxDeadLettered(ctx context.Context, ids []domain.EventID, at time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	at = normalizeTime(at)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writeErrLocked(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		event, ok := s.outbox[id]
+		if !ok || event.DeliveredAt != nil || event.DeadLetteredAt != nil {
+			continue
+		}
+		event.DeadLetteredAt = timePtr(at)
+	}
+	return nil
 }
 
 // MarkOutboxDelivered marks events delivered; already delivered events are kept.

@@ -18,6 +18,42 @@ const (
 	terminalRunStatusesSQL  = "('COMPLETED', 'PARTIAL', 'INFRA_FAILED', 'CANCELLED', 'REJECTED')"
 )
 
+// ListInFlightSteps returns leased/running steps across tenants for scheduler
+// restart adoption.
+func (s *Store) ListInFlightSteps(ctx context.Context, limit int) ([]domain.Step, error) {
+	limit = clampLimit(limit, 500, 2000)
+	rows, err := s.pool.Query(ctx, "SELECT "+stepColumns+` FROM steps
+		WHERE status IN ('LEASED', 'RUNNING')
+		ORDER BY updated_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, mapError(err, "step", "")
+	}
+	defer rows.Close()
+	return collectSteps(rows)
+}
+
+// SetAttemptExecutor persists the executor reference for restart adoption.
+func (s *Store) SetAttemptExecutor(ctx context.Context, ref domain.AttemptRef, executorRef string, at time.Time) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := domain.RequireNonEmpty("executor_ref", executorRef); err != nil {
+		return err
+	}
+	at = at.UTC()
+	tag, err := s.pool.Exec(ctx, `UPDATE attempts SET executor_ref = $4
+		WHERE attempt_id = $1::uuid AND step_id = $2::uuid AND tenant_id = $3::uuid`,
+		ref.AttemptID.String(), ref.StepID.String(), ref.TenantID.String(), executorRef)
+	if err != nil {
+		return mapError(err, "attempt", ref.AttemptID.String())
+	}
+	if tag.RowsAffected() == 0 {
+		return notFound("attempt", ref.AttemptID.String())
+	}
+	return nil
+}
+
 // ListSteps returns every step of a run ordered by creation time.
 func (s *Store) ListSteps(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) ([]domain.Step, error) {
 	if err := tenantID.Validate(); err != nil {
@@ -213,11 +249,14 @@ func (s *Store) TenantUsage(ctx context.Context, tenantID domain.TenantID, since
 	if err := s.pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM runs WHERE tenant_id = $1::uuid AND status NOT IN `+terminalRunStatusesSQL+`),
 		(SELECT count(*) FROM steps WHERE tenant_id = $1::uuid AND status IN `+nonTerminalStepStatusesSQL+`),
-		COALESCE((SELECT sum(cpu_seconds) FROM step_metrics WHERE tenant_id = $1::uuid AND created_at >= $2), 0),
-		COALESCE((SELECT sum(cpu_seconds) FROM step_metrics
-			WHERE tenant_id = $1::uuid AND created_at >= $2 AND step_kind = 'differential-fuzz'), 0)`,
+		COALESCE((SELECT sum(GREATEST(cpu_seconds, execution_ms / 1000.0)) FROM step_metrics
+			WHERE tenant_id = $1::uuid AND created_at >= $2), 0),
+		COALESCE((SELECT sum(GREATEST(cpu_seconds, execution_ms / 1000.0)) FROM step_metrics
+			WHERE tenant_id = $1::uuid AND created_at >= $2 AND step_kind = 'differential-fuzz'), 0),
+		COALESCE((SELECT sum(cas_written_bytes) FROM step_metrics
+			WHERE tenant_id = $1::uuid), 0)`,
 		tenantID.String(), since,
-	).Scan(&usage.ActiveRuns, &usage.ActiveSteps, &usage.DailyCPUSeconds, &usage.DailyFuzzSeconds); err != nil {
+	).Scan(&usage.ActiveRuns, &usage.ActiveSteps, &usage.DailyCPUSeconds, &usage.DailyFuzzSeconds, &usage.CASWrittenBytes); err != nil {
 		return domain.TenantUsage{}, mapError(err, "tenant", tenantID.String())
 	}
 	usage.TenantID = tenantID

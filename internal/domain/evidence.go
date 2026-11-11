@@ -330,37 +330,41 @@ type Signature struct {
 }
 
 type Report struct {
-	SchemaVersion   string            `json:"schema_version"`
-	ReportID        ReportID          `json:"report_id"`
-	RunID           RunID             `json:"run_id"`
-	TenantID        TenantID          `json:"tenant_id"`
-	ProjectID       ProjectID         `json:"project_id"`
-	Verdict         Verdict           `json:"verdict"`
-	BaseCommit      string            `json:"base_commit"`
-	HeadCommit      string            `json:"head_commit"`
-	SnapshotDigest  string            `json:"snapshot_digest"`
-	BaseSnapshot    string            `json:"base_snapshot_digest,omitempty"`
-	HeadSnapshot    string            `json:"head_snapshot_digest,omitempty"`
-	PolicyDigest    string            `json:"policy_digest"`
-	RequestedChecks []string          `json:"requested_checks"`
-	CompletedChecks []string          `json:"completed_checks"`
-	Claims          []ClaimAssessment `json:"claims"`
-	Counterexamples []Counterexample  `json:"counterexamples,omitempty"`
-	Findings        []Finding         `json:"findings,omitempty"`
-	Assumptions     []string          `json:"assumptions,omitempty"`
-	Limitations     []string          `json:"limitations,omitempty"`
-	Metrics         RunMetrics        `json:"metrics"`
-	Provenance      Provenance        `json:"provenance"`
-	Manifest        CASRef            `json:"manifest"`
-	MerkleRoot      string            `json:"merkle_root"`
-	Signatures      []Signature       `json:"signatures,omitempty"`
-	Attestation     AttestationStatus `json:"attestation_status"`
-	GeneratedAt     time.Time         `json:"generated_at"`
+	SchemaVersion       string            `json:"schema_version"`
+	ReportID            ReportID          `json:"report_id"`
+	RunID               RunID             `json:"run_id"`
+	TenantID            TenantID          `json:"tenant_id"`
+	ProjectID           ProjectID         `json:"project_id"`
+	Verdict             Verdict           `json:"verdict"`
+	BaseCommit          string            `json:"base_commit"`
+	HeadCommit          string            `json:"head_commit"`
+	SnapshotDigest      string            `json:"snapshot_digest"`
+	BaseSnapshot        string            `json:"base_snapshot_digest,omitempty"`
+	HeadSnapshot        string            `json:"head_snapshot_digest,omitempty"`
+	PolicyDigest        string            `json:"policy_digest"`
+	RequestedChecks     []string          `json:"requested_checks"`
+	CompletedChecks     []string          `json:"completed_checks"`
+	AllowInconclusiveOn []string          `json:"allow_inconclusive_on,omitempty"`
+	Claims              []ClaimAssessment `json:"claims"`
+	Counterexamples     []Counterexample  `json:"counterexamples,omitempty"`
+	Findings            []Finding         `json:"findings,omitempty"`
+	Assumptions         []string          `json:"assumptions,omitempty"`
+	Limitations         []string          `json:"limitations,omitempty"`
+	Metrics             RunMetrics        `json:"metrics"`
+	Provenance          Provenance        `json:"provenance"`
+	Manifest            CASRef            `json:"manifest"`
+	MerkleRoot          string            `json:"merkle_root"`
+	Signatures          []Signature       `json:"signatures,omitempty"`
+	Attestation         AttestationStatus `json:"attestation_status"`
+	GeneratedAt         time.Time         `json:"generated_at"`
 }
 
 func (r Report) Validate() error {
 	if r.SchemaVersion != ReportSchemaV1 {
 		return &ValidationError{Field: "report.schema_version", Reason: fmt.Sprintf("must be %s", ReportSchemaV1)}
+	}
+	if err := r.ReportID.Validate(); err != nil {
+		return err
 	}
 	if err := r.RunID.Validate(); err != nil {
 		return err

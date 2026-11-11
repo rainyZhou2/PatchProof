@@ -35,7 +35,7 @@ type Store struct {
 	evidence        map[domain.RunID][]domain.Evidence
 	evidenceIDs     map[domain.EvidenceID]struct{}
 	counterexamples map[domain.RunID][]domain.Counterexample
-	reports         map[domain.RunID]domain.Report
+	reports         map[domain.RunID]map[domain.ReportID]domain.Report
 	metrics         map[domain.StepID][]metricRecord
 
 	outbox       map[domain.EventID]*domain.OutboxEvent
@@ -127,7 +127,7 @@ func (s *Store) initLocked() {
 		s.counterexamples = make(map[domain.RunID][]domain.Counterexample)
 	}
 	if s.reports == nil {
-		s.reports = make(map[domain.RunID]domain.Report)
+		s.reports = make(map[domain.RunID]map[domain.ReportID]domain.Report)
 	}
 	if s.metrics == nil {
 		s.metrics = make(map[domain.StepID][]metricRecord)

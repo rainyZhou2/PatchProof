@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/patchproof/patchproof/internal/domain"
@@ -67,10 +68,11 @@ func (s *Store) TenantUsage(ctx context.Context, tenantID domain.TenantID, since
 			if !since.IsZero() && record.at.Before(since) {
 				continue
 			}
-			usage.DailyCPUSeconds += record.metrics.CPUSeconds
+			usage.DailyCPUSeconds += math.Max(record.metrics.CPUSeconds, float64(record.metrics.ExecutionMS)/1000)
 			if record.kind == domain.StepKindDifferential {
-				usage.DailyFuzzSeconds += record.metrics.CPUSeconds
+				usage.DailyFuzzSeconds += math.Max(record.metrics.CPUSeconds, float64(record.metrics.ExecutionMS)/1000)
 			}
+			usage.CASWrittenBytes += record.metrics.CASWrittenBytes
 		}
 	}
 	return usage, nil

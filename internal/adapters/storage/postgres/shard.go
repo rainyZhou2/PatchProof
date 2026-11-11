@@ -10,12 +10,15 @@ import (
 
 // AcquireShardLeases claims the requested shards when their lease is missing,
 // expired, or already owned by the caller.
-func (s *Store) AcquireShardLeases(ctx context.Context, shards []int, owner string, ttl time.Duration, now time.Time) ([]int, error) {
+func (s *Store) AcquireShardLeases(ctx context.Context, shards []int, owner string, ttl time.Duration, now time.Time, limit int) ([]int, error) {
 	if err := domain.RequireNonEmpty("owner", owner); err != nil {
 		return nil, err
 	}
 	if ttl <= 0 {
 		return nil, &domain.ValidationError{Field: "ttl", Reason: "must be positive"}
+	}
+	if limit < 0 {
+		return nil, &domain.ValidationError{Field: "shard_lease_limit", Reason: "must not be negative"}
 	}
 	if len(shards) == 0 {
 		return []int{}, nil
@@ -38,12 +41,21 @@ func (s *Store) AcquireShardLeases(ctx context.Context, shards []int, owner stri
 		now = now.UTC()
 	}
 	deadline := now.Add(ttl)
-	rows, err := s.pool.Query(ctx, `INSERT INTO shard_leases (shard, owner, expires_at)
-		SELECT unnest($1::int4[]), $2, $3
-		ON CONFLICT (shard) DO UPDATE SET
-			owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
-		WHERE shard_leases.expires_at <= $4 OR shard_leases.owner = EXCLUDED.owner
-		RETURNING shard`, unique, owner, deadline, now)
+	rows, err := s.pool.Query(ctx, `WITH candidates AS (
+		SELECT shard FROM (SELECT DISTINCT unnest($1::int4[]) AS shard) AS requested
+		WHERE NOT EXISTS (
+			SELECT 1 FROM shard_leases AS held
+			WHERE held.shard = requested.shard AND held.expires_at > $4 AND held.owner <> $2
+		)
+		ORDER BY shard
+		LIMIT CASE WHEN $5 > 0 THEN $5 ELSE 2147483647 END
+	)
+	INSERT INTO shard_leases (shard, owner, expires_at)
+	SELECT shard, $2, $3 FROM candidates
+	ON CONFLICT (shard) DO UPDATE SET
+		owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
+	WHERE shard_leases.expires_at <= $4 OR shard_leases.owner = EXCLUDED.owner
+	RETURNING shard`, unique, owner, deadline, now, limit)
 	if err != nil {
 		return nil, mapError(err, "shard_lease", owner)
 	}

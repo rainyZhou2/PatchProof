@@ -26,6 +26,7 @@ type MetadataStore interface {
 	GetDAG(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) (domain.DAG, error)
 
 	ListSteps(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) ([]domain.Step, error)
+	ListInFlightSteps(ctx context.Context, limit int) ([]domain.Step, error)
 	ListReadySteps(ctx context.Context, query domain.ReadyQuery) ([]domain.Step, error)
 	PromoteDueSteps(ctx context.Context, now time.Time, limit int) ([]domain.Step, error)
 	GetStep(ctx context.Context, tenantID domain.TenantID, stepID domain.StepID) (domain.Step, error)
@@ -34,6 +35,7 @@ type MetadataStore interface {
 	AcquireLease(ctx context.Context, request domain.LeaseRequest) (domain.Lease, error)
 	RenewLease(ctx context.Context, renewal domain.LeaseRenewal) error
 	StartAttempt(ctx context.Context, ref domain.AttemptRef, at time.Time) error
+	SetAttemptExecutor(ctx context.Context, ref domain.AttemptRef, executorRef string, at time.Time) error
 	CommitAttempt(ctx context.Context, commit domain.AttemptCommit) (domain.CommitOutcome, error)
 	FailAttempt(ctx context.Context, failure domain.AttemptFailure) (domain.CommitOutcome, error)
 	ExpireLeases(ctx context.Context, now time.Time, limit int) ([]domain.LeaseExpiry, error)
@@ -54,6 +56,7 @@ type MetadataStore interface {
 
 	PendingOutbox(ctx context.Context, limit int) ([]domain.OutboxEvent, error)
 	MarkOutboxDelivered(ctx context.Context, ids []domain.EventID, at time.Time) error
+	MarkOutboxDeadLettered(ctx context.Context, ids []domain.EventID, at time.Time) error
 	RecordOutboxFailure(ctx context.Context, failure domain.OutboxDeliveryFailure) error
 	AppendOutbox(ctx context.Context, events []domain.OutboxEvent) error
 
@@ -62,7 +65,7 @@ type MetadataStore interface {
 	ListClusters(ctx context.Context, region string) ([]domain.Cluster, error)
 	DeleteCluster(ctx context.Context, clusterID domain.ClusterID) error
 
-	AcquireShardLeases(ctx context.Context, shards []int, owner string, ttl time.Duration, now time.Time) ([]int, error)
+	AcquireShardLeases(ctx context.Context, shards []int, owner string, ttl time.Duration, now time.Time, limit int) ([]int, error)
 	ReleaseShardLeases(ctx context.Context, owner string) error
 
 	AppendAudit(ctx context.Context, entry domain.AuditEntry) error

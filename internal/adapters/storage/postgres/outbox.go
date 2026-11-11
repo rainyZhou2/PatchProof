@@ -103,7 +103,7 @@ func (s *Store) AppendOutbox(ctx context.Context, events []domain.OutboxEvent) e
 func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]domain.OutboxEvent, error) {
 	limit = clampLimit(limit, 100, 500)
 	rows, err := s.pool.Query(ctx, "SELECT "+outboxColumns+` FROM outbox_events
-		WHERE delivered_at IS NULL
+		WHERE delivered_at IS NULL AND dead_lettered_at IS NULL
 		ORDER BY created_at ASC, event_id ASC
 		LIMIT $1`, limit)
 	if err != nil {
@@ -119,6 +119,30 @@ func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]domain.OutboxEv
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+// MarkOutboxDeadLettered stops retrying events permanently.
+func (s *Store) MarkOutboxDeadLettered(ctx context.Context, ids []domain.EventID, at time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	parsed := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		value, err := uuid.Parse(string(id))
+		if err != nil {
+			return &domain.ValidationError{Field: "event_id", Reason: "must be a UUID"}
+		}
+		parsed = append(parsed, value)
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE outbox_events SET dead_lettered_at = $2
+		WHERE event_id = ANY($1::uuid[]) AND delivered_at IS NULL AND dead_lettered_at IS NULL`,
+		parsed, at.UTC()); err != nil {
+		return mapError(err, "outbox_event", "")
+	}
+	return nil
 }
 
 // MarkOutboxDelivered marks events as delivered at the supplied time.

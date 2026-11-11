@@ -30,6 +30,51 @@ func (s *Store) ListSteps(ctx context.Context, tenantID domain.TenantID, runID d
 	return s.runStepsLocked(state), nil
 }
 
+// ListInFlightSteps returns leased/running steps across tenants for scheduler
+// restart adoption.
+func (s *Store) ListInFlightSteps(ctx context.Context, limit int) ([]domain.Step, error) {
+	limit = normalizeLimit(limit, 500, 2000)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.readErrLocked(); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Step, 0)
+	for _, step := range s.steps {
+		if step.Status == domain.StepLeased || step.Status == domain.StepRunning {
+			out = append(out, *step)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.Before(out[j].UpdatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// SetAttemptExecutor persists the executor reference so a restarted scheduler
+// can observe an in-flight execution instead of starting a duplicate.
+func (s *Store) SetAttemptExecutor(ctx context.Context, ref domain.AttemptRef, executorRef string, at time.Time) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := domain.RequireNonEmpty("executor_ref", executorRef); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writeErrLocked(); err != nil {
+		return err
+	}
+	attempt, ok := s.attempts[ref.AttemptID]
+	if !ok || attempt.StepID != ref.StepID || attempt.TenantID != ref.TenantID {
+		return &domain.NotFoundError{Resource: "attempt", ID: ref.AttemptID.String()}
+	}
+	attempt.ExecutorRef = executorRef
+	s.attempts[ref.AttemptID] = attempt
+	return nil
+}
+
 // ListReadySteps returns schedulable steps ordered by priority DESC, created ASC.
 func (s *Store) ListReadySteps(ctx context.Context, query domain.ReadyQuery) ([]domain.Step, error) {
 	if query.TenantID != "" {

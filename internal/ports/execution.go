@@ -61,6 +61,12 @@ type ExecutorCapabilities struct {
 	RuntimeClasses []string               `json:"runtime_classes"`
 	Features       []string               `json:"features"`
 	MaxConcurrent  int                    `json:"max_concurrent"`
+	// AvailableCPUMilli and AvailableMemoryMiB are the executor's reported
+	// scheduling envelope. Zero means unknown rather than no capacity.
+	AvailableCPUMilli  int64 `json:"available_cpu_milli"`
+	AvailableMemoryMiB int64 `json:"available_memory_mib"`
+	ActiveAttempts     int   `json:"active_attempts"`
+	QueueDepth         int   `json:"queue_depth"`
 }
 
 type Executor interface {

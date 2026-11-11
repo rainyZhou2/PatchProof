@@ -85,12 +85,15 @@ func (s *Store) DeleteCluster(ctx context.Context, clusterID domain.ClusterID) e
 }
 
 // AcquireShardLeases claims free, expired or already-owned shards.
-func (s *Store) AcquireShardLeases(ctx context.Context, shards []int, owner string, ttl time.Duration, now time.Time) ([]int, error) {
+func (s *Store) AcquireShardLeases(ctx context.Context, shards []int, owner string, ttl time.Duration, now time.Time, limit int) ([]int, error) {
 	if err := domain.RequireNonEmpty("shard_lease_owner", owner); err != nil {
 		return nil, err
 	}
 	if ttl <= 0 {
 		return nil, &domain.ValidationError{Field: "shard_lease_ttl", Reason: "must be positive"}
+	}
+	if limit < 0 {
+		return nil, &domain.ValidationError{Field: "shard_lease_limit", Reason: "must not be negative"}
 	}
 	for _, shard := range shards {
 		if shard < 0 {
@@ -116,14 +119,28 @@ func (s *Store) AcquireShardLeases(ctx context.Context, shards []int, owner stri
 		return nil, err
 	}
 	acquired := make([]int, 0, len(requested))
+	// Always renew shards this owner already holds, then claim free or expired
+	// shards up to the per-call limit. This lets several controllers divide the
+	// shard space without a leader.
 	for _, shard := range requested {
 		existing, ok := s.shardLeases[shard]
-		if ok && existing.Owner != owner && now.Before(existing.ExpiresAt) {
+		if ok && existing.Owner == owner {
+			s.shardLeases[shard] = domain.ShardLease{Shard: shard, Owner: owner, ExpiresAt: expiresAt}
+			acquired = append(acquired, shard)
+		}
+	}
+	for _, shard := range requested {
+		if limit > 0 && len(acquired) >= limit {
+			break
+		}
+		existing, ok := s.shardLeases[shard]
+		if ok && (existing.Owner == owner || now.Before(existing.ExpiresAt)) {
 			continue
 		}
 		s.shardLeases[shard] = domain.ShardLease{Shard: shard, Owner: owner, ExpiresAt: expiresAt}
 		acquired = append(acquired, shard)
 	}
+	sort.Ints(acquired)
 	return acquired, nil
 }
 

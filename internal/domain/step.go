@@ -382,6 +382,7 @@ type TenantUsage struct {
 	ActiveSteps      int      `json:"active_steps"`
 	DailyCPUSeconds  float64  `json:"daily_cpu_seconds"`
 	DailyFuzzSeconds float64  `json:"daily_fuzz_seconds"`
+	CASWrittenBytes  int64    `json:"cas_written_bytes"`
 }
 
 func (s Step) LeaseExpired(at time.Time) bool {

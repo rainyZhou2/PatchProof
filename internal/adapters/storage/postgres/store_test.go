@@ -899,28 +899,28 @@ func TestIntegrationClustersShardsAndAudit(t *testing.T) {
 		t.Fatalf("expected NotFoundError, got %T: %v", err, err)
 	}
 
-	claimed, err := store.AcquireShardLeases(ctx, []int{0, 1, 2}, "owner-a", time.Minute, now)
+	claimed, err := store.AcquireShardLeases(ctx, []int{0, 1, 2}, "owner-a", time.Minute, now, 0)
 	if err != nil {
 		t.Fatalf("AcquireShardLeases: %v", err)
 	}
 	if len(claimed) != 3 {
 		t.Fatalf("claimed = %v, want [0 1 2]", claimed)
 	}
-	claimed, err = store.AcquireShardLeases(ctx, []int{1, 2, 3}, "owner-b", time.Minute, now)
+	claimed, err = store.AcquireShardLeases(ctx, []int{1, 2, 3}, "owner-b", time.Minute, now, 0)
 	if err != nil {
 		t.Fatalf("AcquireShardLeases second owner: %v", err)
 	}
 	if len(claimed) != 1 || claimed[0] != 3 {
 		t.Fatalf("claimed = %v, want [3]", claimed)
 	}
-	claimed, err = store.AcquireShardLeases(ctx, []int{1, 2}, "owner-a", time.Minute, now)
+	claimed, err = store.AcquireShardLeases(ctx, []int{1, 2}, "owner-a", time.Minute, now, 0)
 	if err != nil {
 		t.Fatalf("AcquireShardLeases own leases: %v", err)
 	}
 	if len(claimed) != 2 {
 		t.Fatalf("claimed own leases = %v, want [1 2]", claimed)
 	}
-	claimed, err = store.AcquireShardLeases(ctx, []int{4, 4}, "owner-c", time.Minute, now)
+	claimed, err = store.AcquireShardLeases(ctx, []int{4, 4}, "owner-c", time.Minute, now, 0)
 	if err != nil {
 		t.Fatalf("AcquireShardLeases duplicates: %v", err)
 	}
@@ -930,7 +930,7 @@ func TestIntegrationClustersShardsAndAudit(t *testing.T) {
 	if err := store.ReleaseShardLeases(ctx, "owner-a"); err != nil {
 		t.Fatalf("ReleaseShardLeases: %v", err)
 	}
-	claimed, err = store.AcquireShardLeases(ctx, []int{1, 2}, "owner-b", time.Minute, now)
+	claimed, err = store.AcquireShardLeases(ctx, []int{1, 2}, "owner-b", time.Minute, now, 0)
 	if err != nil {
 		t.Fatalf("AcquireShardLeases after release: %v", err)
 	}

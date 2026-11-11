@@ -62,17 +62,18 @@ func EventTypes() []EventType {
 }
 
 type OutboxEvent struct {
-	ID          EventID         `json:"event_id"`
-	TenantID    TenantID        `json:"tenant_id"`
-	Type        EventType       `json:"event_type"`
-	AggregateID string          `json:"aggregate_id"`
-	RunID       RunID           `json:"run_id,omitempty"`
-	Generation  int64           `json:"generation"`
-	OccurredAt  time.Time       `json:"occurred_at"`
-	TraceParent string          `json:"traceparent,omitempty"`
-	Payload     json.RawMessage `json:"payload"`
-	DeliveredAt *time.Time      `json:"delivered_at,omitempty"`
-	Attempts    int             `json:"delivery_attempts"`
+	ID             EventID         `json:"event_id"`
+	TenantID       TenantID        `json:"tenant_id"`
+	Type           EventType       `json:"event_type"`
+	AggregateID    string          `json:"aggregate_id"`
+	RunID          RunID           `json:"run_id,omitempty"`
+	Generation     int64           `json:"generation"`
+	OccurredAt     time.Time       `json:"occurred_at"`
+	TraceParent    string          `json:"traceparent,omitempty"`
+	Payload        json.RawMessage `json:"payload"`
+	DeliveredAt    *time.Time      `json:"delivered_at,omitempty"`
+	DeadLetteredAt *time.Time      `json:"dead_lettered_at,omitempty"`
+	Attempts       int             `json:"delivery_attempts"`
 }
 
 func (e OutboxEvent) Validate() error {

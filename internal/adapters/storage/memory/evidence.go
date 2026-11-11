@@ -106,7 +106,8 @@ func (s *Store) ListCounterexamples(ctx context.Context, tenantID domain.TenantI
 	return out, nil
 }
 
-// PutReport upserts the report for a run.
+// PutReport stores a report version. Reports are immutable: storing the same
+// report id again is a no-op, and a re-aggregation creates a new version.
 func (s *Store) PutReport(ctx context.Context, report domain.Report) error {
 	if err := report.Validate(); err != nil {
 		return err
@@ -120,7 +121,15 @@ func (s *Store) PutReport(ctx context.Context, report domain.Report) error {
 	if !ok || state.run.TenantID != report.TenantID {
 		return &domain.NotFoundError{Resource: "run", ID: report.RunID.String()}
 	}
-	s.reports[report.RunID] = cloneReport(report)
+	versions := s.reports[report.RunID]
+	if versions == nil {
+		versions = make(map[domain.ReportID]domain.Report)
+		s.reports[report.RunID] = versions
+	}
+	if _, exists := versions[report.ReportID]; exists {
+		return nil
+	}
+	versions[report.ReportID] = cloneReport(report)
 	return nil
 }
 
@@ -141,9 +150,16 @@ func (s *Store) GetReport(ctx context.Context, tenantID domain.TenantID, runID d
 	if !ok || state.run.TenantID != tenantID {
 		return domain.Report{}, &domain.NotFoundError{Resource: "report", ID: runID.String()}
 	}
-	report, ok := s.reports[runID]
-	if !ok {
+	versions := s.reports[runID]
+	if len(versions) == 0 {
 		return domain.Report{}, &domain.NotFoundError{Resource: "report", ID: runID.String()}
 	}
-	return cloneReport(report), nil
+	var latest domain.Report
+	for _, report := range versions {
+		if latest.ReportID == "" || report.GeneratedAt.After(latest.GeneratedAt) ||
+			(report.GeneratedAt.Equal(latest.GeneratedAt) && report.ReportID > latest.ReportID) {
+			latest = report
+		}
+	}
+	return cloneReport(latest), nil
 }
